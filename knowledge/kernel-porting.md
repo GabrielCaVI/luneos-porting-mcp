@@ -515,6 +515,53 @@ nothing.)
 4. Anything that hits gets reverted to stock unless you build every module that
    uses that struct yourself.
 
+#### Better: compare the real layouts, using the stock kernel's own headers
+
+Steps 2-3 are a heuristic. If the vendor partition carries **`kheaders.ko`**
+(`CONFIG_IKHEADERS`, common on Android 11 MTK vendors), it holds the stock
+kernel's complete header tree *with its generated `autoconf.h`*, which makes an
+exact check possible:
+
+1. Extract it: the module's data is an xz-compressed tar; find `\xfd7zXZ\0` in
+   the `.ko`, decompress from there, untar. Stock MTK headers reach into
+   `drivers/misc/mediatek/include` by relative path, which kheaders does not
+   carry; symlinking your tree's copy in is fine (platform helpers, not the
+   structs under test).
+2. Write a probe `.c` that only `#include`s every header family the vendor
+   modules use (netdevice, skbuff, cfg80211, sched, fs, device, platform,
+   sdio, tty, genetlink, perf_event, ...).
+3. Compile it twice with the kernel's own flags plus `-g
+   -fno-eliminate-unused-debug-types`: once against your tree and generated
+   headers, once against kheaders. Same compiler both times, so only the
+   headers and config differ.
+4. Diff `sizeof` and every member offset of every struct/union from DWARF
+   (pyelftools; flatten anonymous members).
+
+On the Pocket: 1439 structs compared. Validation: compiling the stock side with
+`-DCONFIG_NET_POLL_CONTROLLER=1 -DCONFIG_NETPOLL=1` reproduces the crash's
+layout exactly (`net_device_ops` 512 → 536 bytes, first difference at
+`ndo_set_vf_mac`; `net_device` gains `npinfo`). With the fixed config, 4
+differ, all harmless: `cgroup`, `cgroup_root`, `css_set` (extra cgroup
+controllers such as CGROUP_DEVICE, which LXC needs; cgroup-core internals) and
+`user_struct` (FANOTIFY adds a field in tail padding: same size, same offsets).
+It also caught one the heuristic missed: CGROUP_PERF adds fields to
+`perf_event` and `perf_cpu_context`, which the vendor `met.ko` profiler uses,
+so it went off too.
+
+Also check that every symbol a vendor module imports and your kernel does not
+export is exported by another vendor module (`__ksymtab_strings`). On the
+Pocket all `mtk_wcn_*` imports resolve to `wmt_drv.ko`.
+
+**Do not use MODVERSIONS CRCs for this on a reconstructed tree.** Comparing the
+modules' `__versions` against your `Module.symvers` flagged 15-90 symbols per
+module, including `printk` (ours 0x27e1a049, stock 0x985558a1) and
+`__stack_chk_fail`, whose declarations involve no structs at all. The stock
+kernel was built from Unihertz's real source with Android clang, ours from
+TheKit's reverse-engineered tree with GCC, so the CRCs carry noise from
+declaration differences that matter to genksyms but not to the ABI. CRC
+attribution (kmi-crc-matching.md) works when you build the vendor's own
+source; against a reconstruction, compare layouts instead.
+
 What step 3 found on the Pocket, and what was done:
 
 | Option (luneos.cfg) | Struct changed | Fix |
@@ -522,6 +569,7 @@ What step 3 found on the Pocket, and what was done:
 | NETCONSOLE → NETPOLL, NET_POLL_CONTROLLER | `net_device`, `net_device_ops` | off; the panic above |
 | CGROUP_NET_PRIO | `net_device` (`priomap`, which changes `sizeof`, so `netdev_priv()` of every vendor netdev points at the wrong place) | off |
 | BLK_CGROUP (+ MEMCG, already on) → CGROUP_WRITEBACK | `inode` | BLK_CGROUP off, as stock. CGROUP_WRITEBACK has no prompt, so it cannot be turned off on its own |
+| CGROUP_PERF (found by the layout probe, not the heuristic) | `perf_event`, `perf_cpu_context` | off, as stock |
 | SYSVIPC (→ IPC_NS) | `task_struct`, after `comm`, before `files`/`nsproxy`/`signal` | off. Not needed since 15 Sep 2026 (section below); the container keeps the host IPC namespace (`lxc.namespace.keep = ipc user`) |
 
 What did *not* hit any of those structs and stayed on: FHANDLE, the namespaces
