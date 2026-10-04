@@ -323,3 +323,38 @@ When adding per-device config, prefer this order:
   `50-luna-platform` read it back as a fallback; `nyx.conf` shipped sargo's key nodes;
   `surface-manager.env` shipped sargo's touchscreen node.)
 - An unknown device must still boot to a usable UI from Tier 0 alone.
+
+
+## Build-tree traps after the build directory was cleaned (4 Oct 2026)
+
+- **Export `DISTRO=luneos`** (`setup-local` does). Without it `meta-luneui`'s mesa
+  patches live in a `luneos/` override directory that the `nativesdk` variant does
+  not search, and parsing stops with "Unable to get checksum ... file could not be
+  found" long before any of your recipes.
+- **Stale stamps are the norm after someone deletes `tmp/work` contents:**
+  `do_package_write_ipk` failing on a missing `packages-split/...`, `do_configure`
+  on a missing source tree or `meson.cross`, `cmake --install` with no
+  `cmake_install.cmake`. `bitbake -c clean <recipe>` fixes the work directory. If
+  the recipe then restores from sstate as an **empty package** (only `-dbg`, `-dev`,
+  `-lic` appear in `deploy-ipks/` and the image fails with "nothing provides ...")
+  use `-c cleansstate`: `clean` alone refills from the same bad cache entry.
+  Build with `bitbake -k` so one pass lists every stale recipe.
+- **One bitbake per build directory.** A second client waits behind the first
+  ("No reply from server in 30s ... Retrying server connection") and then gives
+  up; check `ps` for a foreign `bitbake` before assuming a hang, especially if
+  more than one agent or terminal works in the tree.
+- **A backgrounded `nohup bitbake &` ignores SIGINT.** Stop it with `kill -TERM
+  <pid>` and then the compile tree below it. Never `pkill -f` or `pgrep -f` with a
+  pattern that appears in your own command line (it matches and kills the
+  shell, exit 144, or waits on itself forever): `pgrep -f "[b]itbake"`.
+- **A patch fetched by URL cannot carry `Upstream-Status`**, which wrynose's
+  patch-status QA requires. Keep a local copy of the commit in the recipe's
+  directory with the header added.
+- **The standard image has no `ar`**, so `appinstalld2` cannot install IPKs; the
+  developer package group (`packagegroup-luneos-development`) brings `binutils`.
+  The installer's own package database is separate, so an IPK with `Depends:` on a
+  system package fails with "nothing provides ...".
+- **Edit recipes between bitbake runs, not while one is starting.** A run that
+  started a few minutes after a recipe edit failed with "Unable to connect to bitbake
+  server" and the identical command worked on the next try. The server re-parsing
+  is the suspected cause; it was not proven.

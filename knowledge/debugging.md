@@ -1275,3 +1275,67 @@ between debugging the hardware and debugging nothing.
 - **opkg install can run other packages' pending postinsts.** Installing one ipk configured a long-pending
   android-kernel-bootimg postinst, which dd'd a kernel over lk2nd. Dry-run first:
   `opkg install --noaction`, and check for unpacked packages in /var/lib/opkg/status.
+
+
+## Techniques from the SM-T220 bring-up (3-4 Oct 2026)
+
+**A process "killed, status=9/KILL" with no log and no core.** Do not look for a
+sender in userspace. Trace the kernel's signal generation, filtered to SIGKILL:
+
+    T=/sys/kernel/tracing                     # tracefs is mounted on Halium images
+    echo 0 > $T/tracing_on; echo > $T/trace
+    echo "sig==9" > $T/events/signal/signal_generate/filter
+    echo 1 > $T/events/signal/signal_generate/enable; echo 1 > $T/tracing_on
+    ... reproduce ...; echo 0 > $T/tracing_on; grep signal_generate $T/trace
+
+The line names the *sending* thread. `comm=droid-sink-deep ... code=128` (SI_KERNEL,
+hard-IRQ context, `d.h` flags) means the kernel killed it itself: here
+`RLIMIT_RTTIME` expiring on a `SCHED_RR` thread. A sender that is `init` or
+`systemd` is a different problem.
+
+**strace a service that only fails under its real environment.** Running the
+daemon from a shell (or `su`) changes the environment enough to hide the bug. Run
+it as a transient unit instead, wrapped in `strace`, with the unit's own
+environment file: `systemd-run --unit=x -p EnvironmentFile=-/etc/default/foo
+/tmp/strace -f -e trace=openat,newfstatat -s 160 -o /tmp/x.log /usr/bin/foo ...`.
+There is no `strace` on the image, but the build's deploy directory has an aarch64
+one (`tmp/deploy/ipk/aarch64-halium/strace_*.ipk`): `ar p ... data.tar.zst | zstd -dc
+| tar -x`, then pipe the binary over ssh into `/tmp`. The same works for
+`alsa-utils-amixer`/`-aplay`. To watch a long-running daemon do its work attach
+with `-f -p $(pidof daemon)` first and *then* trigger the action; an attach that
+starts after the action sees nothing.
+
+**Audio with nobody listening.** Facts that were worth more than ears:
+`Headphone Plugged In`, the headset jack as an input device (read the switch state
+with an `EVIOCGSW` ioctl in `python3`; `evtest` is not on the image) so every
+speaker test can refuse to run unless the jack reads empty; a full
+`amixer contents` dump during real HAL playback compared with one during a manual
+setup, parsed on the host (BusyBox `diff` on the device printed nothing for files
+that differed); and `dmesg` lines such as `mtk_pcm_I2S0dl1_prepare` to see which PCM
+the HAL really opened. A microphone loopback was tried and gave digital zero:
+do not rely on it. Ask the person at the device which of two timed variants they
+heard, and label each variant with a wall-clock time.
+
+**Boot-time kernel messages are gone by the time you ssh in.** The dmesg ring and
+the journal's kernel part rotate within minutes on a chatty MTK kernel. If you need
+the audio/accdet/i2c probe lines, reboot and read them immediately, or capture
+`journalctl -k -b` before the first boot's chatter wraps it.
+
+**`logcat` is flooded by one tag** (here `AudioALSAPlaybackHandlerNormal`, 35,000
+lines) so early HAL init lines are overwritten. `logcat -b all -c` right before the
+restart you want to observe, and filter the tag out when reading.
+
+**Other `luna-send` facts:** `luna://com.webos.service.applicationmanager/launch`
+and `close` print a reply without `-i`; `-i` with a pipe printed nothing. Call
+results are also in the journal (`LunaAppManager`, `appinstalld`,
+`ApplicationInstallerUtility` log the exact `opkg` command line they run, which is
+how an install failure turned out to be a dependency-database problem).
+
+| Symptom | Cause found on SM-T220 | Where |
+|---|---|---|
+| PulseAudio dies about 1 s after "Daemon startup complete", status 9 | `RLIMIT_RTTIME` on the SCHED_RR sink threads | `signal_generate` trace |
+| Speakers silent, headphones fine, HAL says "undefined in AudioParamOptions" | vendor parser builds its path in an uncleared `malloc` buffer | `strace`, path with stray bytes |
+| Web-app audio silent, nothing reaches PulseAudio | `waitid(P_PIDFD)` missing; then `reference-media-pipeline` ENOENT; then too few VDEC/ADEC | `umediaserver` journal, `strace -f -p` |
+| Reset 57 s into every boot, `BUG_ON(!sk)` in `bt_sock_reclassify_lock` | Samsung stubbed `hci_sock_create()` | pstore ramoops |
+| `init: Processed ctl.start for 'X' from pid: 0` for a "disabled" service | `start-android-hals.sh` starts everything init skipped | `deviceinfo_android_skip_services` |
+| `appinstalld2`: `Failed to execute child process "ar"` | standard image has no `ar` | its journal |

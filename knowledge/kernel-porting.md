@@ -1182,3 +1182,43 @@ Found on a 3.10 MSM8916 kernel; check each on any pre-4.x Tier B port.
 - **Paranoid networking off breaks vendor daemons that rely on group net_raw** (see the bullet above).
 - **No `CONFIG_BT_HCIVHCI` / `CONFIG_RFKILL`** in an old defconfig: bluebinder exits "No such device".
 
+
+
+## `pidfd_open()` without `waitid(P_PIDFD)`: GLib reaps nothing (SM-T220, athena, mindphone)
+
+Android's 4.14/4.19 trees carry the 5.3 pidfd work (`pidfd_open()`,
+`pidfd_send_signal()`, `CLONE_PIDFD`) but not `waitid(P_PIDFD)`, which is 5.4. Upstream
+those are one release apart, so userspace does not probe for the combination:
+GLib ≥ 2.74 switches its `GChildWatchSource` to pidfds as soon as `pidfd_open()`
+succeeds, then every child reap fails with
+`waitid(pid:N, pidfd=M) failed: Invalid argument (22)` and the callback gets a wait
+status of -1. Symptoms are in whatever spawns children through GLib: the webOS
+media server's pipelines ("exited with status -1"), appinstalld2's package unpack
+("Failed to extract package"), anything using `g_spawn` with a child watch.
+
+Check a tree in seconds: `grep -n P_PIDFD include/uapi/linux/wait.h kernel/exit.c`
+(absent = broken), or on a running device
+`python3 -c "import os,subprocess,time; p=subprocess.Popen(['sleep','0.2']);
+fd=os.pidfd_open(p.pid); time.sleep(.5); print(os.waitid(os.P_PIDFD,fd,os.WEXITED))"`.
+The fix is upstream commit `3695eae5fee0605f316fbaad0b9e3de791d7dfaf` ("pidfd: add
+P_PIDFD to waitid()"); shr-distribution/linux carries a working backport on its
+`key2/4.19` and `dnim/4.14.186` branches, and it applied to Samsung's 4.19.191 with
+only line-number offsets (five files: `pid.h`, `wait.h`, `exit.c`, `fork.c`,
+`signal.c`). On 4.14 it needs one follow-up, "fork: CLONE_PIDFD: do not require a
+zeroed *parent_tidptr", because Qt's `QProcess::startDetached()` otherwise fails
+with EINVAL; **read `copy_process()` first**, the later 4.19 stable trees do not
+have the check and do not need it.
+
+## Vendor trees that stub out `net/bluetooth/hci_sock.c` (Samsung)
+
+Samsung's MediaTek kernels comment out most of `hci_sock.c` and reduce
+`hci_sock_create()` to `return 0`. Android never opens an HCI socket. Halium's
+bluebinder does (`socket(AF_BLUETOOTH, SOCK_RAW, BTPROTO_HCI)`), `bt_sock_create()`
+gets success with `sock->sk == NULL`, and `bt_sock_reclassify_lock()` hits
+`BUG_ON(!sk)`; MediaTek's `ipanic_die()` then resets the device, which is a
+boot loop of a fixed period (77 s on the SM-T220, 57 s of it in the kernel). Find it
+in the ramoops console (`/sys/fs/pstore/console-ramoops-0`, readable in TWRP right
+after a loop reset). The fix is to make the file identical to the tag again; on
+this tree `net/bluetooth/` differed from v4.19.191 in that one file only, so check
+with `diff -r` before writing anything clever. It was *not* CONFIG_SYSVIPC or the
+cgroup options that an earlier attempt blamed.
