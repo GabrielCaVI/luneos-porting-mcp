@@ -633,3 +633,73 @@ Two separate defects:
 
 `audiod` disagreeing with itself (`a2dpAdapterName` vs `adapterName`) is a good
 early tell that adapter indices are not what the configuration assumes.
+
+
+## Vendor libraries that assume Android's zeroed `malloc` (SM-T220, 4 Oct 2026)
+
+Bionic's allocator hands back zeroed memory for a fresh block. The glibc `malloc`
+that libhybris binds to does not: it recycles chunks that start with free-list
+pointers. A vendor library that does `buf = malloc(n); strcat(buf, ...)` works on
+Android and silently builds a corrupt string under libhybris.
+
+The case that cost a day: the MediaTek/Samsung `libaudio_param_parser-vnd.so`
+(`appGetXmlDirFromProperty`) builds `/vendor/etc/audio_param_huaqin/NA` this way.
+The HAL then cannot open its `AudioParamOptions.xml`, logs
+`MTK_AUDIO_NUMBER_OF_MIC undefined in AudioParamOptions`, and every feature option
+reads as undefined. The speaker amplifiers are chosen from one of those options:
+
+| `MTK_AUDIO_SPEAKER_PATH` | `setNonSmartPAType()` | What the HAL then switches on |
+|---|---|---|
+| `int_spk_amp` | 0 (also the fallback) | `speaker_output` only: the codec's own line-out |
+| `int_lo_buf` | 1 | line-out buffer plus `ext_speaker_output` |
+| `int_hp_buf` | 2 | the `aw_speaker_l/r_output` paths: external Awinic AW87xxx amps |
+| `2_in_1_spk` / `3_in_1_spk` | 3 / 4 | dual / triple speaker variants |
+
+so with the options unreadable you get the fallback, the amps stay off, and the
+speakers are silent while the headphone path (a different, internal route) works.
+
+How to recognise it: the HAL's own log line above; `Ext_Speaker_Amp_Switch` and the
+vendor amp's profile control staying `Off` during real playback; and, decisively,
+`strace -f -e trace=openat,newfstatat` on the audio process showing a path with a
+few stray bytes in front. Read the code path before the mixer: if the HAL's
+selection logic is wrong, no amount of manual mixer setting reproduces what stock
+does.
+
+What does not work: setting the property the library writes (it rebuilds the
+string itself), `MALLOC_PERTURB_=255` (glibc's thread cache returns blocks without
+applying it), and adding `GLIBC_TUNABLES=glibc.malloc.tcache_count=0` on top (the
+vendor audio module then failed to load at all). What works is a one-allocation
+binary patch, `malloc(512)` → `calloc(512, 1)`, applied at boot to a *copy* of the
+device's own library which is then bind-mounted over the vendor path; the SM-T220
+layer script checks every instruction word before changing it so another firmware
+build is left alone and nothing from the vendor partition is redistributed. Expect
+the same class of bug in other vendor libraries: any `malloc` whose result is read
+before it is written.
+
+Also from that port: `module-droid-hidl` execs
+`/usr/libexec/audiosystem-passthrough/audiosystem-passthrough`, so the *runtime*
+dependency on the package that ships it must exist, not only a build-time
+`DEPENDS`; a Samsung 32-bit `awinic.audio.effect.so` that the 64-bit HAL cannot
+`dlopen` is Awinic's software speaker-protection DSP, not the amp switch.
+
+## webOS media server (umediaserver) on Halium: three independent ways to play nothing
+
+HTML5 audio and video in a web app go WAM → `ums.client` → `umediaserver` →
+`g-media-pipeline` → GStreamer → PulseAudio, and a failure at any hop leaves the
+page with `MEDIA_ERROR_FORMAT` and PulseAudio with no stream at all. Test the
+layers separately: `gst-launch-1.0 filesrc ! wavparse ! ... ! pulsesink
+device=pcm_output` proves GStreamer and PulseAudio; then look at `umediaserver`.
+
+1. **`waitid(...pidfd...) failed: Invalid argument`, pooled processes "exited with
+   status -1".** The kernel lacks `waitid(P_PIDFD)` (see `kernel-porting`).
+2. **`execve("/usr/sbin/reference-media-pipeline") = -1 ENOENT`** under
+   `strace -f -p $(pidof umediaserver)`. The static
+   `/etc/umediaserver/umediaserver_resource_config.txt` names that binary; the tree
+   ships `g-media-pipeline`. `dynamic_pipeline_dir` (`/var/lib/ums/conf`) is empty.
+   Seen on SM-T220, hammerhead and q25, so it is not per-device.
+3. **`POLCAND_FIND_ERR no suitable candidate found`.** A plain WAV asks the resource
+   manager for `1 ADEC` and `8 VDEC`; the table has 2 of each. VDEC 16 / ADEC 8 let
+   two players (Testr opens two at once) run. The numbers are a judgement.
+
+The player is created when the page loads: after a failed load pressing play later
+produces no log line at all, so relaunch the app with the trace already attached.

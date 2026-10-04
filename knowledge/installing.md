@@ -180,3 +180,30 @@ Since 4 Sep 2026 the bluejay/panther images come out of bitbake (`MACHINE=<dev> 
 ## Installer end state (plan §8, not yet built)
 
 `luneos-installer` (Python, host-side): detect the device (`fastboot getvar product`, `ro.product.device`, `ro.board.api_level`, `ro.boot.slot_suffix`, boot header version from the stock boot.img) → look up `devices/<codename>/deviceinfo`; unknown devices get "generic GKI" mode (pull the stock boot/init_boot off the device, repack with the LuneOS initramfs, warn loudly) → download universal `rootfs.img`, `system-gsi-<vndk>.img`, boot images → flash vbmeta/boot/init_boot, format userdata unencrypted, push the two images → reboot.
+
+
+## Samsung Download-mode tablets (SM-T220): what actually worked (4 Oct 2026)
+
+Samsung's lk speaks Odin only; the route that worked end to end was a mix:
+
+- **Unlock once**, via Developer options → OEM unlocking, then the Vol Up
+  long-press at the Download-mode warning screen. Download mode by key: Vol Up +
+  Vol Down while plugging in USB. The Knox bit is set.
+- **Odin (`odin4` for Linux, built from `main`; the release fails multi-part
+  files)** is fine for `boot` and `vbmeta` (unsigned header, verification-disabled
+  flag). Its **userdata write left holes in the rootfs image on this tablet**, at
+  flash time, content-dependent; do not trust it for a multi-GB `userdata`.
+  `SW REV CHECK FAIL: [userdata]` on the screen is cosmetic.
+- **Boot partition from a running LuneOS:** `dd` the boot image to the `boot`
+  partition (`mmcblk0p38` here, 32 MiB), read it back and compare md5, keep a copy
+  of the old partition. BusyBox `dd` here has no `conv=notrunc`; patch in place by
+  concatenating `dd bs=4` pieces instead.
+- **Rootfs through TWRP:** `adb -s <serial> push rootfs.ext4 /data/rootfs.img.new`
+  (79 MB/s over USB), verify the checksum on the device, then rename the current
+  `rootfs.img` to `rootfs.img.prev` and the new file into place. The initramfs
+  finds `rootfs.img` on userdata. Over Wi-Fi ssh the same push runs at about
+  0.6 MiB/s, which is an hour for 4.4 GB: do not.
+- **`adb -s` always.** TWRP and an unrelated tablet can both be on the bus, and a
+  restarted adb server briefly lists one as `offline`.
+- After the first boot on a new rootfs ssh refuses the old host key; that is the
+  new image's keys, not an attack, if you just flashed it.

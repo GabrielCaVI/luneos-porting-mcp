@@ -39,6 +39,16 @@ The knowledge was distilled from real ports and bring-ups:
   Android-15-vendor shortcut, where an A15 vendor serves a Halium 16 GSI with no
   VNDK snapshot at all
 
+- **sm-t220** (Samsung Galaxy Tab A7 Lite Wi-Fi, MT8768T) — Tier 1 MediaTek
+  tablet behind a Samsung lk (Odin only), booting LuneOS with the stock Android 12
+  vendor. The port that taught that a vendor library's uncleared `malloc` silently
+  switches the speaker amplifiers off under libhybris, that a 4.19 kernel with
+  `pidfd_open()` but no `waitid(P_PIDFD)` breaks every GLib child watch (the webOS
+  media server plays nothing), and that the shared umediaserver config names a
+  pipeline binary no package ships. Also: Samsung's stubbed raw HCI socket as a
+  boot-loop cause, the `signal_generate` tracepoint for a SIGKILL with no sender,
+  and a rootfs deploy path (TWRP `adb push`) that avoids Odin's userdata write
+
 plus cross-checked material from the UBports, Droidian and Sailfish OS (HADK)
 porting guides, integrated where their methods transfer to the LuneOS stack
 (and flagged where they conflict — e.g. their kernel config lists vs the
@@ -91,7 +101,7 @@ Topics (auto-discovered from `knowledge/*.md`):
 | `installing` | flash kits, userdata images, fastboot flows, anti-rollback |
 | `tools` | kmi-crc-check, module-order, payload_extract, mer-kernel-check, … |
 | `deviceinfo-reference` | the UBports/HGABT `deviceinfo` variable reference our Tier 1 format reuses |
-| `device-bluejay` / `device-panther` / `device-mindphone` / `device-sargo` / `device-zinwa-q25` / `device-mp01` / `device-athena` / `device-sunfish` / `device-surya` / `device-fajita` | per-device reference |
+| `device-bluejay` / `device-panther` / `device-mindphone` / `device-sargo` / `device-zinwa-q25` / `device-mp01` / `device-athena` / `device-sunfish` / `device-surya` / `device-fajita` / `device-sm-t220` | per-device reference |
 
 ### Tools
 
