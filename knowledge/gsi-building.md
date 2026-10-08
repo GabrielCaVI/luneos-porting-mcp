@@ -165,3 +165,13 @@ When bumping a machine to a newer GSI generation, also bump `PREFERRED_VERSION_a
 They do not build GSIs: they re-host UBports Jenkins artifacts pinned to a job number, and every URL for the versions that matter is dead (halium-14.0 job 460 and halium-13.0 job 517 both 404; `ci.droidian.org`, which the 10/11/12 packages use, no longer resolves). Their `download.sh` has signature verification commented out — an unverified `curl` into the rootfs. LuneOS's own releases plus Yocto `SRC_URI` checksums are strictly better. Their upstream — the UBports `jenkins-ci/generic_arm64` job — remains the right *reference* for building newer GSIs.
 
 Also do not rely on `mirrors.lolinet.com/firmware/halium/GSI` — not updated since 2020.
+
+## GSI-side fixes for legacy vendors (8 Oct 2026)
+
+- `system/linkerconfig` (branch luneos/sphal-vndk-legacy): let sphal link libbinder.so and libui.so from
+  the VNDK APEX for VNDK 28 and 30 vendors (gralloc via libqdutils; see hal-userspace.md).
+- `vendor/halium/droidmedia` minimedia.cpp: `configureRpcThreadpool(5, false)` — without it a HAL1
+  takePicture() deadlocks minimediaservice against the HAL.
+- Both are in the halium_arm GSI built as halium-luneos-16.0-20261008-3 (not published at the time of
+  writing). Rebuilding after a linkerconfig-only change takes ~20 s; check that
+  `variableloader.cc` was recompiled (it is installed into the runtime APEX, not /system/bin).

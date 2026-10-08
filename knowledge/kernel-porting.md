@@ -671,7 +671,13 @@ Tier A kernel; the rest are behavioral.
 - **`CONFIG_ANDROID_PARANOID_NETWORK` must stay ON** — disabling it for normal
   Linux networking breaks rild on hybris-12.1+ bases. SFOS wraps the capability
   checks in `#ifdef CONFIG_ANDROID_PARANOID_NETWORK` instead of removing the
-  option (SFOS hadk-faq).
+  option (SFOS hadk-faq). Seen from the other side on the Galaxy A3 (2015), whose
+  luneos.cfg had it off (copied from sm-t520): Qualcomm's vendor `rmt_storage`
+  drops to `setgid(AID_NET_RAW)` and relies on paranoid networking to pass the
+  IPC router's bind check, failed with "msm_ipc_router_bind: rmt_storage Do not
+  have permissions", and the modem without its EFS reset the phone. Fixed there by
+  accepting group net_raw in `net/ipc_router/ipc_router_security.c`
+  `check_permissions()`; see device-a3-2015-halium.md.
 - **`CONFIG_BT_HCIVHCI=y` is bluebinder's kernel prerequisite** — bluebinder
   feeds the Android BT HAL into a virtual HCI. mindphone's working hci0 (vhci)
   depended on this; we never recorded the config until now (SFOS hadk-hot).
@@ -1111,3 +1117,20 @@ This is upstream behaviour on every machine, not a recipe bug. Repack from
 `packages-split/kernel-module-*` instead, and guard the injector with a
 `readelf -S … | grep .debug_info` check - a host `strip` cannot help you
 (`Unable to recognise the architecture of the input file`).
+
+## Legacy kernels: what the 16.0 GSI and LuneOS assume that a 3.x vendor kernel lacks (Galaxy A3 (2015), 8 Oct 2026)
+
+Found on a 3.10 MSM8916 kernel; check each on any pre-4.x Tier B port.
+
+- **`COMMAND_LINE_SIZE` 1024 (arch/arm).** CONFIG_CMDLINE, the boot image's command line and a Samsung
+  SBL's 775 bytes (passed on by lk2nd) overflow it, and everything past the cut is gone without a
+  warning: `androidboot.baseband` (so `ro.baseband=unknown` and rmt_storage refuses to run),
+  `androidboot.mode`, `androidboot.serialno`, `mdss_mdp.panel`. `wc -c /proc/cmdline` = 1024 is the
+  tell. Raise it to 2048 (arm64 has always used 2048).
+- **No `MemAvailable` in /proc/meminfo** before 3.14: memorymanager counts 0 MiB available and every app
+  launch ends in "Failed to reclaim required memory. All apps were closed". The tenderloin commit
+  "mm: add MemAvailable to /proc/meminfo" (si_mem_available()) applies unchanged to 3.4 and 3.10 trees;
+  hammerhead and mako have it, bullhead got it on 8 Oct 2026.
+- **Paranoid networking off breaks vendor daemons that rely on group net_raw** (see the bullet above).
+- **No `CONFIG_BT_HCIVHCI` / `CONFIG_RFKILL`** in an old defconfig: bluebinder exits "No such device".
+

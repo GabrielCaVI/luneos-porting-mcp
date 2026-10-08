@@ -276,3 +276,18 @@ Check `cat <supply>/online` whenever charging detection is wrong.
    placeholders beat plausible constants.
 5. Longer term, move anything derivable into `luneos-device-config` generation instead of
    accumulating per-device cmake constants.
+
+## Samsung devices: rear_flash torch and sec-battery's charge_now (8 Oct 2026)
+
+- **Torch.** Samsung's flash drivers (rt5033 on the Galaxy A3 (2015), sm5701, sm5705, ...) offer the torch
+  only as `/sys/class/camera/flash/rear_flash` — write-only, "1" on, "0" off — and register no LED class
+  device. nyx's led_torch module has a fourth backend for it (after MediaTek and the LED class): used where
+  the LED class has nothing and rear_flash is writable, or where `[module.led] torch_path` names a plain
+  file. It reports what it last set and switches off on close. luneos-device-config's 35-torch-app counts
+  rear_flash as a torch, so the Flashlight app is not hidden. Fix it in nyx, not per kernel driver.
+- **charge_now is not a charge on sec-battery**: `sec_battery.c` returns `battery->charging_mode` (1) for
+  POWER_SUPPLY_PROP_CHARGE_NOW, so the battery app showed 0 mAh. nyx treats a charge_now under 1 mAh beside
+  a percentage above zero as no reading: stated full capacity times the percentage, else -1.
+- **Capacity keys:** `design_capacity_mah` is only taken together with `full_capacity_mah`; for a gauge
+  that cannot measure the full charge, give the pack's rating for both (a LineageOS device tree's
+  power_profile.xml has it as `battery.capacity`).

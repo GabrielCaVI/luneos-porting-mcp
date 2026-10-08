@@ -39,6 +39,13 @@ The knowledge was distilled from real ports and bring-ups:
   Android-15-vendor shortcut, where an A15 vendor serves a Halium 16 GSI with no
   VNDK snapshot at all
 
+- **a3-2015-halium** (Samsung Galaxy A3 2015, MSM8916) — a 2015 phone on the 16.0 GSI through lk2nd, with
+  a LineageOS 18.1 (VNDK 30) vendor and a 3.10 kernel. The port that found what a 3.x vendor kernel lacks
+  (a 1024-byte command line that silently dropped `androidboot.baseband`, no MemAvailable, an IPC router
+  that needs paranoid networking for rmt_storage), that a Samsung SBL boots into charger mode after every
+  hard reset with a cable, that text-relocation camera libraries need a lowered target SDK, and that
+  minimediaservice deadlocks a HAL1 takePicture() with a single HwBinder thread
+
 plus cross-checked material from the UBports, Droidian and Sailfish OS (HADK)
 porting guides, integrated where their methods transfer to the LuneOS stack
 (and flagged where they conflict — e.g. their kernel config lists vs the
