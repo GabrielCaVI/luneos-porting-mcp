@@ -1250,3 +1250,28 @@ prepared on the strength of the opposite reading.
 return value to the caller.** Grep the exact string, then check whether that
 path sets a non-zero `ret`. It takes two minutes and it is the difference
 between debugging the hardware and debugging nothing.
+
+## Techniques from the Galaxy A3 (2015) bring-up (7-8 Oct 2026)
+
+- **A reset at the same second of every boot is a subsystem crash, not power.** Here the modem lost its EFS
+  (rmt_storage) and restart level SYSTEM reset the SoC ~10 s after "Brought out of reset". Read the
+  battery before suspecting it: a RAM-booted initramfs that holds with a telnet shell showed 99 %.
+- **Log a boot that dies before adb:** start `while :; do dmesg > F.new && mv F.new F; sync; sleep 0.5; done`
+  from the initramfs (chrooted into the rootfs, before switch_root); the next boot reads the file. Keep
+  slow things such as `logcat -d` out of that loop (it blocks until logd is up) and remove the loop
+  afterwards: the half-second sync made the UI sluggish.
+- **Busybox on the rootfs differs from GNU:** no `timeout` (use `cmd & p=$!; (sleep N; kill $p) & wait $p`),
+  `dd` has no `conv=fsync` (prints its usage and writes nothing — a restore script "verified" six times
+  without writing), `head` wants `-n N`.
+- **Never `pkill -f`/`pgrep -f` a pattern that also appears in your own adb shell command line**; select
+  by `/proc/<pid>/cmdline` instead.
+- **Do not `nsenter` into the container's mount namespace on a 3.x kernel**: copying a vendor dir through
+  `/proc/<pid>/root` and bind-mounting in the container hung the phone twice. Fix the image instead.
+- **Native backtraces of a hung HAL:** `lxc-attach -n android -- /system/bin/debuggerd -b <container pid>`
+  (the container has its own pid namespace; take the pid from logcat or `lxc-attach ... pidof`).
+- **Reboot reliably from adb:** `systemd-run --on-active=2 /bin/systemctl --force reboot
+  --reboot-argument=normal`; a backgrounded command dies with the adb session, and a plain reboot can
+  land a Samsung device in charger mode.
+- **opkg install can run other packages' pending postinsts.** Installing one ipk configured a long-pending
+  android-kernel-bootimg postinst, which dd'd a kernel over lk2nd. Dry-run first:
+  `opkg install --noaction`, and check for unpacked packages in /var/lib/opkg/status.

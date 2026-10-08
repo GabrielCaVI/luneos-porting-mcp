@@ -633,3 +633,76 @@ Two separate defects:
 
 `audiod` disagreeing with itself (`a2dpAdapterName` vs `adapterName`) is a good
 early tell that adapter indices are not what the configuration assumes.
+
+## Legacy Qualcomm vendors on the 16.0 GSI: the Galaxy A3 (2015) set (8 Oct 2026)
+
+A LineageOS 18.1 (VNDK 30) MSM8916 vendor converted by halium-legacy-vendor. Each item is generic to
+legacy Qualcomm vendors; the A3 was just the first to hit them together.
+
+### Display: three gaps, each hiding the next
+
+1. The composer HAL links framework copies (libhwui, libmedia) that the converter puts in /vendor/lib;
+   libhwui needs **libft2.so**, which the GSI's LLNDK list names but the container's vendor linker does
+   not hand over. `HALIUM_LEGACY_EXTRA_LIBS = "libft2.so"` (sm-t520 and tenderloin do the same).
+2. Those copies want full-libbinder/libmedia symbols (`android::MetaDataBase::writeToParcel`):
+   `HALIUM_LEGACY_SHIM_TARGETS` (halium-legacy-shim).
+3. **gralloc in sphal** (`gralloc.msm89xx.so` -> libqdutils -> libui, libbinder, both VNDK-core) cannot
+   load, media.swcodec aborts "gralloc-mapper is missing", and everything behind the Codec2 store
+   (droidmedia, gst-droid, the compositor) waits for ever. Fixed GSI-side in
+   `system/linkerconfig/generator/variableloader.cc` for VNDK 28 and 30 (branch luneos/sphal-vndk-legacy).
+   A quick way to prove it on a running device: append `:libui.so:libbinder.so` to the
+   `namespace.sphal.link.vndk.shared_libs` lines of the container's generated /linkerconfig/*ld.config.txt
+   (tmpfs) and restart media.swcodec.
+
+### Text relocations: the Android 16 linker refuses them
+
+Vendor libraries with `TEXTREL` (`readelf -d lib.so | grep TEXTREL`) do not load in a process whose target
+SDK is 23 or later. On the A3 only three had them, all camera: libmmcamera_faceproc.so (dlopen()ed by
+mm-qcamera-daemon, so its faceproc module silently went missing and the preview stream could not be linked:
+"mct_stream_start_link ... Null", "QCameraStream: Failed to config stream" — a white viewfinder) and two
+ArcSoft libraries. libpermissioncache_shim.so lowers the process's target SDK to 22 from a constructor;
+preload it into the affected services with an rc `override` + `setenv LD_PRELOAD` (direct exec, no shell
+wrapper). `android-system-image-legacy-a9-shim.inc` ships just that shim. Scan a new vendor once:
+`for f in vendor/lib/*.so vendor/lib/hw/*.so; do readelf -d $f | grep -q TEXTREL && echo $f; done`.
+
+### Camera HAL1: provider service, and a deadlock in minimediaservice
+
+- A LineageOS vendor may declare `android.hardware.camera.provider@2.4` **passthrough** only, for its own
+  cameraserver to load in-process. The GSI needs the service: build
+  `android.hardware.camera.provider@2.4-service` in the vendor's own Android tree (matching VNDK), ship it
+  in the device tarball, and list the provider in `HALIUM_LEGACY_BINDERIZED_HALS`.
+- **takePicture() deadlock:** minimediaservice (droidmedia) serves the HAL's ICameraDeviceCallback with
+  libhidl's default of one HwBinder thread. The QCamera2 HAL's capture thread holds its API lock and calls
+  `unregisterMemory()` back while that thread is in the shutter notification, calling `disableMsgType()`
+  into the HAL. Fix in droidmedia minimedia.cpp: `hardware::configureRpcThreadpool(5, false)`, as
+  cameraserver does. Diagnose with `debuggerd -b <container pid>` on the provider and on minimediaservice.
+- Camera service "rejected (too many other clients connecting)" after such a hang: restart
+  `vendor.camera-provider-2-4`, `qcamerasvr` and `camera_service` (ctl.restart) instead of rebooting.
+
+### WCNSS (pronto): Wi-Fi and Bluetooth share one chip
+
+- Built-in prima starts on `echo sta > /sys/module/wlan/parameters/fwpath`, only once the WCNSS control
+  channel is up: wait until `/sys/devices/soc.0/a000000.qcom,wcnss-wlan/wcnss_version` stops reading
+  `INVALID` (before that the write fails with ENODEV after ~12 s, and repeating it does not help).
+- start-android-hals force-starts disabled services; the vendor's **hciattach** (init.qcom.bt.sh) among
+  them powers WCNSS through the Bluetooth path before wcnss_service has triggered it: "regulator get of
+  riva_vddmx failed (-19)", "Failed to execute wcnss_wlan_power", and then neither WLAN nor BT works. Put
+  it in `deviceinfo_android_skip_services`; the BT HAL starts it itself later.
+- With EFS mounted, wcnss_service hands the firmware the real MAC (/efs/wifi/.mac.info).
+
+### Samsung EFS and the Bluetooth address
+
+- `/efs` may have no fstab line at all (LineageOS a3lte). Ship a vendor `/etc/fstab.efs`; mount-android.sh
+  reads every /vendor/etc/fstab* and mounts it at /android/efs. Read-only is enough.
+- The BT HAL aborts in initialize() with "Open: No Bluetooth Address!" without `ro.bt.bdaddr_path` (a
+  system.prop property: `HALIUM_LEGACY_SYSTEM_PROP_PREFIXES += "ro.bt. ..."`) or when it cannot read the
+  file (radio:net_bt_stack 0640): give the HAL group 3008 in an rc override. **By number**: the 16.0 init
+  no longer knows `net_bt_stack` ("Unable to decode GID"), and the whole override is then dropped.
+- bluebinder_post.sh reads that property's path on the host; bluebinder patch 0004 (meta-luneos) falls
+  back to /android<path>.
+
+### deviceinfo skip lists were not per device
+
+start-android-hals.sh sourced every adaptation's deviceinfo on the rootfs, so the one that sorts last
+(n2awifi) supplied everybody's `deviceinfo_android_skip_services`. It now sources the one
+`luneos-adaptation` (luneos-device-config) names, after the container's properties are readable.

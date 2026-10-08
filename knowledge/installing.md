@@ -180,3 +180,18 @@ Since 4 Sep 2026 the bluejay/panther images come out of bitbake (`MACHINE=<dev> 
 ## Installer end state (plan §8, not yet built)
 
 `luneos-installer` (Python, host-side): detect the device (`fastboot getvar product`, `ro.product.device`, `ro.board.api_level`, `ro.boot.slot_suffix`, boot header version from the stock boot.img) → look up `devices/<codename>/deviceinfo`; unknown devices get "generic GKI" mode (pull the stock boot/init_boot off the device, repack with the LuneOS initramfs, warn loudly) → download universal `rootfs.img`, `system-gsi-<vndk>.img`, boot images → flash vbmeta/boot/init_boot, format userdata unencrypted, push the two images → reboot.
+
+## lk2nd devices (Galaxy A3 (2015), 8 Oct 2026)
+
+- lk2nd lives in the first 512 KiB of the boot partition and boots the real boot image from 0x80000.
+  `fastboot flash boot` inside lk2nd writes behind it; `fastboot boot` RAM-boots and passes the previous
+  bootloader's arguments on (including `androidboot.mode=charger` when the SBL started in charger mode).
+- **Do not let anything dd a boot image to the start of the partition.** android-kernel-bootimg's postinst
+  did, once, from a pending first-boot configure; it now writes 512 KiB in when it finds lk2nd there.
+  Restore over Download mode: `heimdall flash --BOOT <lk2nd 512 KiB + boot.img>`; keep a copy of lk2nd's
+  512 KiB.
+- **Samsung SBL + cable + hard reset = charger mode** (`androidboot.mode=charger androidboot.baseband=lpm`),
+  including lk2nd's `fastboot reboot`. Get a normal boot with a warm reboot that carries an argument
+  (`reboot2 normal`-style RESTART2 from an initramfs shell, `systemctl reboot --reboot-argument=normal`
+  from LuneOS), or a hard reset without the cable. The initramfs should hold and charge in charger mode
+  (meta-smartphone#6).
