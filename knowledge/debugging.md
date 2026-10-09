@@ -1,6 +1,8 @@
 # LuneOS GSI/GKI Bring-up Debugging Playbook
 
-A stage-by-stage playbook for "the device doesn't come up", distilled from real bring-ups: Pixel 3a (sargo, Halium 9→14/16 GSI), Pixel 6a (bluejay, GKI Tier A), Pixel 7 (panther), and a MediaTek MT6739 32-bit device (mindphone). Every failure mode in the core text was hit on hardware and diagnosed; the fixes named are the ones that shipped. The playbook also folds in cross-checked material from the UBports, Droidian and SFOS porting guides (attributed inline with sources) — that material is other distros' documented experience, not LuneOS-verified; SFOS-derived command spellings in particular were extracted from summarized pages, so verify against the cited source if one fails. Work through the stages in order — each stage's failures are only visible once the previous stage is cleared, and several of these bugs hide behind one another.
+Stage-by-stage playbook for a LuneOS GSI/GKI port that does not come up, distilled from failures hit and diagnosed on real hardware.
+
+Devices behind it: Pixel 3a (sargo, Halium 9→14/16 GSI), Pixel 6a (bluejay, GKI Tier A), Pixel 7 (panther), the MediaTek ports (mindphone MT6739 32-bit, MP01, radon, Titan Pocket, SM-T220), BlackBerry KEY2 (athena) and Galaxy A3 (2015). Every failure mode in the core text was hit on hardware and diagnosed; the fixes named are the ones that shipped. The playbook also folds in cross-checked material from the UBports, Droidian and SFOS porting guides (attributed inline with sources) — that material is other distros' documented experience, not LuneOS-verified; SFOS-derived command spellings in particular were extracted from summarized pages, so verify against the cited source if one fails. Work through the stages in order — each stage's failures are only visible once the previous stage is cleared, and several of these bugs hide behind one another.
 
 **Log-collection discipline** (SFOS hadk-hot, <https://sailfishos.wiki/books/hardware/page/hadk-hot>): collect evidence before changing anything. `dmesg -w` live; boot with `audit=0` (kills audit spam) and `printk.devkmsg=on` (unthrottled userspace → kmsg — the stock bluejay cmdline already carries it); `journalctl -b-1` reads the previous boot once the persistent journal is enabled; logcat output differs run as root vs user.
 
@@ -46,13 +48,15 @@ by the initramfs trace) was the same symptom, misread as evidence about
 userspace.
 
 Prefer instrumentation that does **not** alter the kernel: an initramfs trace
-written to an unused flash partition (see `device-radon` / `tools.md`) needs no
+written to an unused flash partition (see device-radon.md / tools.md) needs no
 config change at all.
 
 ### Corollary: substitute in BOTH directions
 
-Hybrid boot images are the right tool for splitting kernel from ramdisk, but one
-direction is not a result:
+Hybrid boot images split kernel from ramdisk, but only if the cmdline is held
+fixed: a donor image brings its own `Kernel command line:` — diff the two before
+reading anything into the result (see "Swap the kernel under a known-good
+ramdisk" below). And one direction is not a result:
 
 | test | reading |
 |---|---|
@@ -158,7 +162,7 @@ rebuilt Tier B kernel"). The pmsg zone showed userspace too: the Android
 container up and surface-manager loading the vendor hwcomposer. So the port was
 otherwise healthy, and the 22 s timing meant the initramfs was long done.
 
-The staging kit's `dump-expdb.sh` (titanpocket-staging) does both passes: DRAM
+The device's staging kit `dump-expdb.sh` does both passes: DRAM
 first, then `mtk r expdb,cache` in one session, and decodes everything.
 
 ### Recording the initramfs to a spare partition: `initrd_log_fail`
@@ -222,7 +226,7 @@ The Halium-family initramfs also exposes a telnet path that works when adb doesn
 **The LuneOS initramfs now has this too (2026-09-06).** The panic/debug path in `initramfs-scripts-halium` `init.sh` (meta-smartphone/meta-android) starts `telnetd` at **`192.168.2.15` port 23** alongside the adbd gadget, with `udhcpd` serving the host `192.168.2.20–90` so no host-side configuration is needed, and announces itself in the gadget's iSerial string (`LuneOS initrd telnet 192.168.2.15: <reason>`). The gadget network function is auto-selected per kernel: it tries `rndis.usb0` and `ecm.usb0` and links whichever the kernel supports — **stock GKI 6.1 (bluejay/panther) ships ECM only, MTK 4.14 (mindphone) RNDIS only, athena's 4.19 (SDM660) RNDIS only**. Fixed gadget MACs (`FA:75:7F:BB:F4:E6`/`:E7`, first byte even) avoid the all-zeros-MAC refusal and give the host a stable connection. One caveat: ECM has no native Windows driver, so on GKI Pixels use a Linux or macOS host (or adb, which still works — both channels come up together). All tools are busybox applets already in the initramfs (`FEATURE_TELNETD_STANDALONE`, `UDHCPD`, `ip`, `getty` verified in the shipped build). Two more channels ride along:
 
 - **ACM serial console** — an `acm.usb0` gadget function with a shell on `/dev/ttyGS0`; on the host just `screen /dev/ttyACM0 115200`, no networking involved. `CONFIG_USB_CONFIGFS_ACM=y` in stock GKI 6.1 and mindphone's 4.14 (athena's defconfig lacks it — the function silently doesn't appear there).
-- **netconsole (Tier B only)** — after the debug network is up, init attaches a dynamic netconsole target streaming kmsg to UDP broadcast port 6666; the host listens with `nc -ul 6666`, and the stream **survives switch_root into the full boot**. Right after attaching, init **replays the early printk buffer** into the stream (`dmesg` re-injected line-by-line into `/dev/kmsg`, prefixed `replay:`), so the host gets history from power-on — boot-param netconsole targets get this via `CON_PRINTBUFFER`, dynamic ones don't. The replay needs `printk.devkmsg=on` on the cmdline (athena's `ANDROID_BOOTIMG_CMDLINE` now carries it; stock bluejay already does). Requires `CONFIG_NETCONSOLE=y` + `CONFIG_NETCONSOLE_DYNAMIC=y`, now in the athena and mindphone fragments. **Do not add it to a Tier A GKI fragment: NETCONSOLE selects NETPOLL, which adds a field to `struct net_device` — KMI-poison of the SYSVIPC class.** **Nor to a Tier B fragment where the container force-loads vendor network modules.** NETPOLL also turns on `NET_POLL_CONTROLLER`, which inserts three pointers into the middle of `struct net_device_ops`. On the Titan Pocket the stock-built `wlan_drv_gen3.ko` then had `register_netdev()` call `ndo_bpf` through the shifted table, and the kernel panicked 22 s into every boot (see Stage 0, "read ramoops straight out of DRAM"). Only use netconsole where no prebuilt network driver loads, or where you build those drivers yourself.
+- **netconsole (Tier B, and only where no prebuilt network module loads)** — after the debug network is up, init attaches a dynamic netconsole target streaming kmsg to UDP broadcast port 6666; the host listens with `nc -ul 6666`, and the stream **survives switch_root into the full boot**. Right after attaching, init **replays the early printk buffer** into the stream (`dmesg` re-injected line-by-line into `/dev/kmsg`, prefixed `replay:`), so the host gets history from power-on — boot-param netconsole targets get this via `CON_PRINTBUFFER`, dynamic ones don't. The replay needs `printk.devkmsg=on` on the cmdline (athena's `ANDROID_BOOTIMG_CMDLINE` now carries it; stock bluejay already does). Requires `CONFIG_NETCONSOLE=y` + `CONFIG_NETCONSOLE_DYNAMIC=y`. **Never on Tier A: NETCONSOLE selects NETPOLL, which adds a field to `struct net_device` — KMI-poison.** **Not safe on Tier B either wherever the container loads stock vendor network modules.** NETPOLL also turns on `NET_POLL_CONTROLLER`, which inserts three pointers into the middle of `struct net_device_ops`. On the Titan Pocket the stock-built `wlan_drv_gen3.ko` then had `register_netdev()` call `ndo_bpf` through the shifted table, and the kernel panicked 22 s into every boot (see Stage 0, "read ramoops straight out of DRAM"). Only use netconsole where no prebuilt network driver loads, or where you build those drivers yourself. The athena and mindphone fragments carry it; mindphone also force-loads the stock WMT modules, which makes it a case for the struct-layout check (kernel-porting.md, "The check: diff struct-affecting options against stock"), not evidence that the combination is safe.
 
   **Cmdline netconsole (`netconsole=...@/usb0,...`) is mainline-only — and actively harmful on configfs-gadget devices.** Verified in the athena 4.19 source: `netpoll_setup()` aborts with `-ENODEV` when the target interface doesn't exist at init, and `init_netconsole()` then unwinds *everything* — including the dynamic configfs interface — so a cmdline entry naming a not-yet-existing `usb0` silently kills dynamic netconsole too. Tenderloin can use it (`netconsole=6665@172.16.42.2/usb0,6666@172.16.42.1/` in `CONFIG_CMDLINE`, webOS-heritage `172.16.42.x` addressing) only because its mainline kernel sets `CONFIG_USB_ETH=y` — the built-in `g_ether` gadget creates `usb0` before userspace. Enabling `g_ether` on an Android-style kernel would claim the UDC and cost the configfs gadget (adb + everything else) — not worth it. Note also: athena has **no pstore/ramoops at all** (nothing in the defconfig, no DT node), so a panic before the initramfs is currently invisible there; a ramoops DT node + `PSTORE_RAM` would be the fix but needs a carefully chosen reserved-memory region.
 
@@ -264,7 +268,7 @@ Fix history, worth knowing because the intermediate fix was a trap:
 Check any device's module set host-side, no hardware needed:
 
 ```
-python3 gsigki/tools/module-order.py <lib/modules dir>
+python3 module-order.py <lib/modules dir>    # see tools.md
 ```
 
 ### 1.2 Module cmdline parameters — the kernel does not pass them to loadable modules
@@ -500,7 +504,7 @@ Inside the LXC container, init often has no usable `/dev/kmsg` (the host owns `/
 Child <pid> ended on signal Hangup(1)
 ```
 
-Two init patches (in `gsigki/halium16-init-logging-patches/`) close the hole:
+Two AOSP init patches (the halium16 init-logging patches, tools.md) close the hole:
 1. **Tee every log line to `/dev/socket/init.log`** — the container config bind-mounts `/dev/socket` from the host, so the log outlives the container and is readable from outside after init is gone.
 2. **Breadcrumbs before `InitKernelLogging`** — two plain `write()` markers at `FirstStageMain` entry and after the `/dev` setup block, so a death in that window is distinguishable from init never having been exec'd. No-ops outside a Halium container.
 
@@ -583,7 +587,7 @@ libhybris also ships per-subsystem smoke binaries usable before any middleware e
 
 ### Wifi
 - A `wifi-module-load.service` modprobing a module that doesn't exist on this device (copy-paste from another port) produces a 2 s restart loop — check whether the driver is built-in (`CONFIG_MTK_COMBO=y` on mindphone: no module to load).
-- MTK combo (WMT) pattern: the real drivers are the **stock vendor modules** (`/vendor/lib/modules`: wmt_drv, wmt_chrdev_wifi, wlan_drv_gen2, bt_drv, gps_drv). Their CRCs disagree with a reconfigured kernel (module_layout) — `CONFIG_MODULE_FORCE_LOAD=y` + `modprobe --force` proved safe in practice. Set the firmware path (`firmware_class.path` → `/android/vendor/firmware`) before loading, and stage the modules in a private tree under `/run`, **not** `/lib/modules/$(uname -r)` — udev coldplug autoloads from there and bootloops the device on the next boot (kernel-porting.md).
+- MTK combo (WMT) pattern: the real drivers are the **stock vendor modules** (`/vendor/lib/modules`: wmt_drv, wmt_chrdev_wifi, wlan_drv_gen2, bt_drv, gps_drv). Their CRCs disagree with a reconfigured kernel (module_layout) — `CONFIG_MODULE_FORCE_LOAD=y` + `modprobe --force` loads them and worked on mindphone (wifi, BT and GPS came up). It is only safe while every struct those modules touch keeps the stock layout: on the Titan Pocket a NETCONSOLE-shifted `struct net_device_ops` made the force-loaded `wlan_drv_gen3` panic the kernel (Stage 0, "read ramoops straight out of DRAM"; kernel-porting.md, "The check: diff struct-affecting options against stock"). Set the firmware path (`firmware_class.path` → `/android/vendor/firmware`) before loading, and stage the modules in a private tree under `/run`, **not** `/lib/modules/$(uname -r)` — udev coldplug autoloads from there and bootloops the device on the next boot (kernel-porting.md).
 - The container's `wmt_loader` needs the MTK connectivity `/dev` nodes exposed to the container; then power-on is `echo 1 > /dev/wmtWifi` **retried until wlan0 exists** (the container wmt daemons patch CONSYS firmware first).
 - This is generalized in `meta-android/recipes-core/mtk-connectivity`: three condition-gated units keyed on `ConditionPathExists |wmt_drv.ko |conninfra.ko`, driven by the connectivity subset of the vendor's `modules.load` (grep `wmt|wlan|conn|bt_drv|gps|fmradio`) — no hardcoded module list, inert on non-MTK.
 - Module-load error decoding (Halium docs, <https://docs.halium.org/en/latest/porting/debug-build/wifi.html>): `"Required key not found"` = module signature enforcement — disable `CONFIG_MODULE_SIG*` (Tier B only; stock GKI leaves MODULE_SIG_FORCE unset anyway, per bluejay). `"Invalid module format"` = kernel/module version-config mismatch — the non-GKI cousin of our CRC story. Broadcom `bcmdhd` is best built `=m`, not `=y` — as a module it picks up the device MAC address; built-in it doesn't. Legacy Qualcomm (pre-2016 SoCs): `echo 1 > /dev/wcnss_wlan`, `echo sta > /sys/module/wlan/parameters/fwpath`.
@@ -723,12 +727,12 @@ sshd, so the application is out of the picture.
   grep -B2 -A6 "Unknown HCI Command" /tmp/bt.log
   ```
 
-  Then look up what gates that command in `hci_core.c` (`hci_init*_req`) and mask the bit bluebinder passes through (`BLUEBINDER_LOCAL_EXT_FEATURES_PAGE_2_MASK`, `BLUEBINDER_LOCAL_FEATURES_MASK`) or add missing ones (`BLUEBINDER_LOCAL_COMMANDS_SET`). MP01: Read Synchronization Train Parameters → page 2 byte 0 bit 2 → mask `0x0400000000000000`. Test by writing the value to `/var/lib/environment/bluebinder/<x>.conf` and restarting bluetooth → bluebinder → bluetooth in that order.
-- A `dut_mode ... already present` debugfs warning means a second `hci0` was registered over a stale vhci — a killed bluebinder left it behind. Restart the stack in order before debugging further.
+  Then look up what gates that command in `hci_core.c` (`hci_init*_req`) and mask the bit bluebinder passes through (`BLUEBINDER_LOCAL_EXT_FEATURES_PAGE_2_MASK`, `BLUEBINDER_LOCAL_FEATURES_MASK`) or add missing ones (`BLUEBINDER_LOCAL_COMMANDS_SET`). MP01: Read Synchronization Train Parameters → page 2 byte 0 bit 2 → mask `0x0400000000000000`. Test by writing the value to `/var/lib/environment/bluebinder/<x>.conf` and restarting the stack in order: stop BlueZ and bluebinder → restart the BT HAL → start bluebinder → start BlueZ (hal-userspace.md).
+- A `dut_mode ... already present` debugfs warning means a second `hci0` was registered over a stale vhci — a killed bluebinder left it behind. Restart the stack in that same order before debugging further.
 
 ### Misc
 - Audio wrong rather than absent: pulseaudio-modules-droid has documented quirk arguments — pitched/tempo-shifted audio → `rate=48000` (or 44100); volume keys dead → `hw_volume=false`; crash or silence in voice calls → `use_legacy_stream_set_parameters=true`. Full table and the `audio.hidl_compat.default.so` binder workaround live in the hal-userspace topic. (UBports docs)
-- Time-sync UI dead: LunaSysService calls `timedatectl`, which isn't installed until systemd-timedated ships.
+- Network-time toggle fails: LunaSysService's `enableNetworkTimeSync()` runs `timedatectl set-ntp`, and there is no `timedatectl` on a device — meta-luneos removes `timedated` and `timesyncd` on purpose, since LunaSysService's own sntp path owns time (nyx-modules.md). Do not add them back.
 - HW keypad ignored by Qt: udev tags it `ID_INPUT_KEY` only; Qt evdevkeyboard discovery needs `ID_INPUT_KEYBOARD` — promote with a udev rule.
 - `library "libpq_cust.so" not found` from MTK HWC is benign — the vendor ships `libpq_cust_base.so` and the HAL falls back.
 
@@ -736,7 +740,7 @@ sshd, so the application is out of the picture.
 
 ## Stage 5 — Idle health: the port "works" but burns CPU, flash or battery
 
-A port that boots and runs can still be quietly wasteful. From the sargo/tissot idle triage (12 Sep 2026, `LuneOS/memoryusage/findings-2026-09-12.md`): both devices "healthy", yet four separate things were burning a core or flash for nothing. **Metrics to collect on any idle device:** per-process *cumulative* CPU vs uptime (`ps -o time` against `uptime` — a daemon that has used 2 h in 10 h is 20% of a core however calm it looks now), journal *and* container-logcat lines/s, GB/h whole-disk flash writes, `SUnreclaim` slope over **at least a day** (18 minutes cannot separate a slow leak from churn), and the suspend entry count (neither triage device had suspended once — check before trusting wake-from-suspend).
+A port that boots and runs can still be quietly wasteful. From the sargo/tissot idle triage (12 Sep 2026): both devices "healthy", yet four separate things were burning a core or flash for nothing. **Metrics to collect on any idle device:** per-process *cumulative* CPU vs uptime (`ps -o time` against `uptime` — a daemon that has used 2 h in 10 h is 20% of a core however calm it looks now), journal *and* container-logcat lines/s, GB/h whole-disk flash writes, `SUnreclaim` slope over **at least a day** (18 minutes cannot separate a slow leak from churn), and the suspend entry count (neither triage device had suspended once — check before trusting wake-from-suspend).
 
 Four proven failure patterns, generalized:
 
@@ -1100,11 +1104,11 @@ them.
 
 ### Two ways to write a file on the device
 
-Files placed with `adb push` from a local copy behaved every time. Several
-bootloops in this bring-up followed writes done as `adb shell "cat > file
-<<EOF ... EOF"`; the correlation is strong but not proven (the device also had
-independent reset causes). Prefer `adb push`, keep backups outside directories
-that are scanned (a `.orig` plugin next to the real one gets loaded too).
+Prefer `adb push` from a local copy over `adb shell "cat > file <<EOF ... EOF"`:
+on the MP01 the pushed files behaved every time, while several bootloops
+followed heredoc writes (a correlation only, unproven — the device also had
+independent reset causes). Keep backups outside directories that are scanned
+(a `.orig` plugin next to the real one gets loaded too).
 
 ### Test a service environment variable without writing a file
 
@@ -1132,7 +1136,7 @@ had `lxc.namespace.keep = ipc user`; Waydroid's generated config did not.
 `/proc/self/ns`, after `waydroid upgrade -o` has regenerated the config (a hand
 edit to the config is overwritten on the next session start).
 
-## Swap the kernel under a known-good ramdisk to split kernel from userspace
+## Swap the kernel under a known-good ramdisk — and diff the cmdline it brings
 
 When a port fails at something as basic as mounting, the first question is
 whether the kernel or the userspace is at fault, and almost every other
@@ -1174,12 +1178,13 @@ Caveats worth stating before you run it:
   console exists. Copying it verbatim produces a black screen that tells you
   nothing.
 - **A recovery that never comes up is inconclusive, not a result.** Say so in
-  advance so nobody over-reads it. If Android's init bails because your kernel
-  defaults SELinux off, adding `selinux=1 androidboot.selinux=permissive`
-  changes nothing the mount path can see.
-- **Check the logs you already have first.** On athena this experiment had
-  already been run and was sitting in the log archive the porter had sent;
-  an image was built to re-run it anyway.
+  advance so nobody over-reads it.
+- **The kernel's SELinux state is visible to the mount path.** On athena
+  `selinux=0` alone made `mount(2)` return ENOENT (kernel-porting.md § selinux=0
+  made mount(2) return ENOENT on a CIP 4.19 tree). Keep the donor's SELinux
+  tokens, or change them as a deliberate, separate variable.
+- **Check the logs you already have first** — the swap may already have been
+  run in a log archive.
 
 ## Slice a multi-boot journal by boot before you grep totals
 

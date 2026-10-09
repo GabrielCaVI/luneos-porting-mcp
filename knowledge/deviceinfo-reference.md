@@ -1,5 +1,7 @@
 # deviceinfo Reference (UBports/HGABT format)
 
+Reference for `deviceinfo` keys: the UBports/HGABT boot and kernel variables LuneOS reuses verbatim, and LuneOS's own runtime keys read by luneos-device-config.
+
 LuneOS's Tier 1 adaptation format deliberately reuses the UBports/postmarketOS
 `deviceinfo` variable names **verbatim**, so UBports and pmOS device configs can be
 consumed directly and fixes contributed back. This file is the missing reference table:
@@ -94,7 +96,7 @@ Sources:
 | `deviceinfo_has_recovery_partition` / `deviceinfo_recovery_partition_size` | separate recovery partition + size |
 | `deviceinfo_rootfs_image_sector_size` | e.g. `4096` |
 | `deviceinfo_system_partition_size` | e.g. `3584M` |
-| `deviceinfo_use_overlaystore` | `"true"` → enable the marker-file overlay store (see architecture notes, Tier 2 prior art) |
+| `deviceinfo_use_overlaystore` | `"true"` → enable the marker-file overlay store (see architecture.md, Tier 2 prior art) |
 
 `make-bootimage.sh` additionally consumes `deviceinfo_bootimg_board` (mkbootimg
 `--board`) and `deviceinfo_vendor_bootconfig_path` (v4 vendor bootconfig).
@@ -109,7 +111,7 @@ Sources:
 - **v4** — adds vendor bootconfig support.
 - When partition sizes are set, **AVB hash footers** are appended to the produced images.
 
-This matches the layout classes documented in the boot-images notes (bluejay = v4
+This matches the layout classes documented in boot-images.md (bluejay = v4
 boot-carries-ramdisk, panther = v4 + init_boot + vendor_kernel_boot, mindphone = v2).
 
 ## Translating a Droidian port: kernel-info.mk ↔ deviceinfo
@@ -248,8 +250,9 @@ describes behaviour you have never actually verified.
 
 ## Cross-references
 
-- Boot-image assembly per layout class, initramfs patches, AVB: see the boot-images notes.
+- Boot-image assembly per layout class, initramfs patches, AVB: see boot-images.md.
 - Kernel fragment content and KMI constraints (what a `deviceinfo`-driven Tier B build
-  may set that a Tier A GKI build must not): see the kernel-porting notes.
+  may set that a Tier A GKI build must not): see kernel-porting.md and kmi-crc-matching.md.
 - Where deviceinfo sits in the adaptation tiers (Tier 1: only what cannot be read off a
-  running device): see the architecture notes.
+  running device): see architecture.md.
+- How the nyx keys reach the modules (`/etc/nyx.conf`): see nyx-modules.md.

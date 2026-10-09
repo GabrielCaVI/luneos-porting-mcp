@@ -1,5 +1,7 @@
 # Device: sm-t220 (Samsung Galaxy Tab A7 Lite Wi-Fi) — MediaTek Tier 1 behind a Samsung bootloader
 
+Samsung Galaxy Tab A7 Lite Wi-Fi (`sm-t220`), MediaTek MT8768T, Tier B on its stock Android 12 vendor and Halium 16 GSI: boots LuneOS with audio, media and app installs.
+
 A MediaTek MT8768T (platform `mt6765`) tablet running the stock Android 12 vendor
 and its 4.19.191 kernel interface under the generic Halium 16 GSI, modelled on
 `radon`. It boots LuneOS, with speaker audio, HTML5 media (the Testr app) and app
@@ -7,8 +9,7 @@ installs through appinstalld2 all confirmed on the device. What makes it worth
 reading is not the SoC but the chain of faults that all looked like "no sound":
 the causes were a kernel syscall, a vendor library's allocator assumption, a
 resource table and a scheduler limit, and none of them is visible in a mixer.
-Layer `meta-smartphone/meta-samsung`, `MACHINE=sm-t220`, build tree
-`/media/herrie/LuneOS/wrynose/webos-ports`. Status file in the layer:
+Layer `meta-smartphone/meta-samsung`, `MACHINE=sm-t220`. Status file in the layer:
 `meta-samsung/conf/machine/sm-t220-STATUS.md`.
 
 ## Platform facts (read from the firmware and the running tablet)
@@ -67,8 +68,7 @@ never opens an HCI socket; bluebinder does, `bt_sock_create()` then calls
 (`/sys/fs/pstore/console-ramoops-0`, readable in TWRP right after a looping boot).
 `net/bluetooth/` differs from v4.19.191 in that one file only, so the fix is to
 make it identical again. Check any Samsung/MTK vendor tree for the same stub
-before blaming SYSVIPC or the cgroup options. (An earlier attempt reverted
-CONFIG_SYSVIPC; it was not the cause.)
+before blaming the kernel config.
 
 ### 2. PulseAudio killed with no trace: RLIMIT_RTTIME
 

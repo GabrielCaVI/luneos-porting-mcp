@@ -1,6 +1,8 @@
 # LuneOS GSI + GKI Architecture
 
-LuneOS is moving from device-specific images to **one universal LuneOS arm64 rootfs** that boots on essentially any unlockable Treble/GKI Android device, with per-device cost reduced to a boot image and a handful of config files. This document describes the target architecture, the storage/install model, the Tier A/Tier B kernel split, the adaptation tier model, and the current status (verified on the Pixel 3a `sargo` pilot device, August 2026). Historically, a LuneOS port = one Yocto `MACHINE` + one forked Android device tree + one full Halium Android build + one kernel fork — everything rebuilt per device (`TUNE_PKGARCH:append = "-halium"` taints every package with the machine arch). That is why LuneOS never scaled past Android 9.
+LuneOS's target architecture: one universal arm64 rootfs plus a generic Halium GSI on any unlockable Treble/GKI device, with per-device cost cut to a boot image and config.
+
+This document describes the target architecture, the storage/install model, the Tier A/Tier B kernel split and the adaptation tier model; it was first proven on the Pixel 3a (`sargo`). Historically, a LuneOS port = one Yocto `MACHINE` + one forked Android device tree + one full Halium Android build + one kernel fork — everything rebuilt per device (`TUNE_PKGARCH:append = "-halium"` taints every package with the machine arch). That is why LuneOS never scaled past Android 9.
 
 ## Why Treble makes this possible
 
@@ -10,9 +12,9 @@ The trick is not really "GSI" in the Android sense — it is **Project Treble**:
 
 - `/vendor` (device's own, untouched) provides the HALs and firmware.
 - `/android` (our generic Halium GSI) provides Android init + `hwservicemanager`/`servicemanager` + the VNDK/`libbinder`/`libhidl` set the vendor HALs link against.
-- Compatibility is negotiated at runtime through **VINTF** (`compatibility_matrix.xml` / `manifest.xml`). The binding constraint is the **vendor API level** (`ro.vndk.version` / `ro.board.api_level`), *not* the Android version the device currently runs. Match the GSI to that number and it works. Never read `ro.build.version.release` for this.
+- Compatibility is negotiated at runtime through **VINTF** (`compatibility_matrix.xml` / `manifest.xml`). The binding constraint is the **vendor API level**, *not* the Android version the device currently runs. Read it from `ro.vndk.version`, or from `ro.vendor.build.version.sdk` on A15+ vendors, which have no `ro.vndk.version` and whose `ro.board.api_level` is a YYYYMM date (202404, 202504) rather than an SDK number (see device-fajita.md). Never read `ro.build.version.release` for this.
 - Android 15 deprecated VNDK — for A15/16 vendor images the former VNDK libs ship in `/vendor` itself. Neutral-to-helpful, but the `halium-16.0` GSI is shaped differently and is its own generation.
-- Honest limitation: libhybris/Halium is well-trodden through Android 13. Halium 14/16 exist but are early — plan 9/11/13 as production targets, 16 as an experimental track (though sargo now boots on both 14.0 and 16.0 GSIs).
+- In practice the **16.0 GSI is the production target**: every GSI machine in meta-smartphone pins `android-headers-halium` 16.0 (sargo also boots 14.0). Its arm64 build ships the VNDK 27–34 snapshots (from the `halium-luneos-20260910` release on), so one image serves vendors from Android 8.1 to 14, and A15+ vendors carry their former VNDK libs themselves. Limitation: libhybris past Android 13 is community-patched (see Key risks).
 - Vendor floor: the Halium 9 GSI requires an **Android 9 vendor** as its base — Android 8.0/8.1 vendors are "experimental" only (UBports porting-notes, https://github.com/ubports/porting-notes/wiki/Generic-system-image-(GSI)).
 
 ## The artifact table
@@ -20,7 +22,7 @@ The trick is not really "GSI" in the Android sense — it is **Project Treble**:
 | Artifact | Count | Device-specific? |
 |---|---|---|
 | LuneOS rootfs (`rootfs.img`) | **1** for all arm64 devices | no |
-| Halium GSI (`system.img` → `/android`) | **~4** (one per Halium generation: 9/11/13/16) | no — picked by vendor API level |
+| Halium GSI (`system.img` → `/android`) | **1 in use**: 16.0 (`halium_arm64`, plus `halium_arm` for 32-bit userlands). 9.0/11.0/13.0/14.0 are built and published but no current port uses them | no — the GSI carries a VNDK snapshot per vendor API level |
 | Boot image (kernel + LuneOS initramfs) | **~4 GKI KMIs** + one per legacy device | GKI: no. Legacy: yes |
 | Device adaptation (udev, audio, modem, quirks) | ~15 tiny files per device | yes, but *data*, not a build |
 
@@ -38,14 +40,14 @@ Nothing is flashed to `system`/`vendor`. `rootfs.img` and `system.img` live as f
                     └────────────────────────────────────────────┘
                                      +
                     ┌────────────────────────────────────────────┐
-                    │  built ~4x, in CI, from halium/android     │
+                    │  built per generation, from halium/android │
    AOSP/repo ───────┤   halium_arm64 product, branches           │
-                    │   halium-9.0 / -11.0 / -13.0 / -16.0       │
+                    │   halium-9.0/-11.0/-13.0/-14.0/-16.0       │
                     │   → system-gsi-<vndk>.img                  │
                     └────────────────────────────────────────────┘
                                      +
    ┌──────────────────────────────┐     ┌──────────────────────────────┐
-   │ Tier A — GKI (A12+/5.10+)    │     │ Tier B — legacy (A9–A11)     │
+   │ Tier A — GKI (A12+/5.10+)    │     │ Tier B — pre-GKI vendor BSP  │
    │ build ACK once per KMI       │     │ build vendor kernel per dev  │
    │ + repack boot/init_boot      │     │ driven by deviceinfo         │
    │ using per-device offsets     │     │ (reuse UBports HGABT)        │
@@ -94,20 +96,20 @@ https://docs.ubports.com/en/latest/porting/configure_test_fix/Fscrypt.html)
 
 ## Tier A vs Tier B kernels
 
-**Tier A — GKI (Android 12+, kernel ≥5.10).** Android 12+ with kernel ≥5.10 must ship GKI: the core kernel is generic; SoC/board drivers are loadable modules in `vendor_boot` (early/recovery) and `vendor_dlkm` (the rest). The KMI is binary-stable within an LTS (`android12-5.10`, `android13-5.15`, `android14-6.1`, `android15-6.6`) — exactly what lets us ship **one Halium-configured kernel per KMI instead of one per device**. The stock GKI config is not enough (Droidian's guide says so; verified on bluejay: 23 errors / 59 warnings from `mer_verify_kernel_config`), so rebuild from ACK with a config fragment — but that rebuild is per KMI, not per device; the stock `vendor_dlkm` modules still load because the KMI is stable. That is the single biggest lever in the whole plan. Risk: OEMs that deviate from pure GKI (some Samsung/MediaTek) may reject an ACK-built kernel — those devices fall back to Tier B.
+**Tier A — GKI (Android 12+, kernel ≥5.10).** Android 12+ with kernel ≥5.10 must ship GKI: the core kernel is generic; SoC/board drivers are loadable modules in `vendor_boot` (early/recovery) and `vendor_dlkm` (the rest). The KMI is binary-stable within an LTS (`android12-5.10`, `android13-5.15`, `android14-6.1`, `android15-6.6`) — exactly what lets us ship **one Halium-configured kernel per KMI instead of one per device**. The stock GKI config is not enough (Droidian's guide says so; verified on bluejay: 23 errors / 59 warnings from `mer_verify_kernel_config`), so rebuild from ACK with a config fragment — but that rebuild is per KMI, not per device; the stock `vendor_dlkm` modules still load as long as the rebuilt kernel keeps the KMI's symbol CRCs. That is the single biggest lever in the whole plan. **A GKI-labelled device is not necessarily ACK-compatible:** the Zinwa Q25 (MT6789) ships MediaTek's *mgk* GKI derivative, and an ACK build failed all 344 of its stock vendor modules while a build from the device's own kernel tree loads all of them (see device-q25.md). Such a device is still Tier A, but the kernel comes from the vendor's GKI tree, not ACK.
 
 Boot layout by generation:
 - A11/A12: generic ramdisk in `boot`.
-- **A13+ launch devices: `boot` = GKI kernel only; generic ramdisk moved to `init_boot`.** Replace *only* `init_boot`, leave the stock kernel and `vendor_boot` alone — if the stock GKI config is sufficient.
+- **A13+ launch devices: `boot` = GKI kernel only; generic ramdisk moved to `init_boot`.** Because the stock GKI config is not sufficient (above), LuneOS replaces both: `boot` gets the rebuilt kernel, `init_boot` the LuneOS initramfs; `vendor_boot` stays stock (panther, see boot-images.md).
 - Header v3/v4; v4 adds `boot_signature` for GKI certification. (v0 ≤A8, v1 A9, v2 A10/11.)
 
-**Tier B — legacy (A9–A11, pre-GKI).** Build the vendor kernel per device, driven by a `deviceinfo` file (UBports/postmarketOS format) so adding a legacy device does not mean writing bitbake. Example: sargo is pre-GKI (kernel 4.9) and keeps a device kernel, but can jump from Halium 9 to a Halium 12 GSI simply by flashing stock Android 12 first so `/vendor` is vendor API level 31 — three Android generations forward, zero Android-side build.
+**Tier B — pre-GKI, vendor BSP kernel.** Defined by the kernel, not by the Android version: a device whose kernel is the vendor's own BSP tree is Tier B whatever its vendor runs (mindphone: Android 11 vendor; sargo: 12.1; sunfish; fajita, athena and surya: Android 15 vendors). Build the vendor kernel per device, driven by a `deviceinfo` file (UBports/postmarketOS format) so adding a legacy device does not mean writing bitbake. Example: sargo is pre-GKI (kernel 4.9) and keeps a device kernel, but moved from its Halium 9 device build to the 14.0 and 16.0 GSIs simply by flashing stock Android 12.1 first so `/vendor` is VNDK 32 — zero Android-side device build.
 
 ## Dynamic partitions (Android 10+), including retrofit
 
 From Android 10, `system`/`vendor`/`product` are logical partitions inside `super`, with a custom header (not LVM). Map them with `dm-linear` via `droidian/parse-android-dynparts`.
 
-**Retrofit is the case that matters.** Devices launched pre-A10 and upgraded (like sargo, launched on Android 9) get *retrofit* dynamic partitions. From the LineageOS bonito board config:
+**Retrofit is the case that matters.** Devices launched pre-A10 and upgraded (like sargo, launched on Android 9, retrofitted with Android 10: AOSP `device/google/bonito` sets `PRODUCT_RETROFIT_DYNAMIC_PARTITIONS := true` from `android-10.0.0_r1`) get *retrofit* dynamic partitions. From the LineageOS bonito board config:
 
 ```
 BOARD_SUPER_PARTITION_METADATA_DEVICE := system
@@ -125,7 +127,7 @@ There is **no partition named `super` on such a device, ever**, and extents span
 - derives `product` and `odm` from the *vendor's* fstab once vendor is mounted
 - strips `context=` / `trusted=` mount flags
 
-Container config (from `9b32def7`): `lxc.arch` derived from `TARGET_ARCH` (was wrongly hardcoded `armhf`), `lxc.uts.name = android`, binderfs mounted on the host and bound in as optional, APEX handled by UBports' `mount-apexes.py` (pre-mounts the minimal runtime/art/i18n/vndk set the linker needs). Droidian's LXC config additionally carries `optional` mounts worth having: `/apex` (required from Android 10 — libraries move into APEXes and libhybris cannot find them otherwise), `/dev/binderfs`, `/odm`, `/vendor_dlkm` (matters for the GKI tier).
+Container config (from `9b32def7`): `lxc.arch` derived from `TARGET_ARCH` (was wrongly hardcoded `armhf`), `lxc.uts.name = android`, binderfs mounted on the host and bound in as optional, APEX handled by UBports' `mount-apexes.py` (pre-mounts the minimal runtime/art/i18n/vndk set the linker needs; required from Android 10 — libraries move into APEXes and libhybris cannot find them otherwise). Droidian's LXC config carries `optional` entries for `/apex`, `/odm` and `/vendor_dlkm`; LuneOS needs none, because it mounts everything under `/android`, which *is* the container root.
 
 ## The adaptation tier model — derive first, declare second, ship files last
 
@@ -138,7 +140,7 @@ Container config (from `9b32def7`): `lxc.arch` derived from `TARGET_ARCH` (was w
 | 50 EACCES on vendor sysfs | per-device chown list | replay `chown`/`chmod` from the triggers init never reached |
 | compositor races the HAL | per-device sleep | wait for `IComposer` to actually register on hwbinder |
 
-**Tier 0 — derived at runtime (target: everything).** `luneos-device-config` derives: HAL services, init gates, node permissions (from `/android/{vendor,odm,system}/etc/init/**.rc`); display density from `ro.sf.lcd_density`, geometry from hwcomposer/DRM; partitions by name plus `parse-android-dynparts`; vendor API level from `ro.board.api_level` / `ro.vndk.version` (selects the GSI); RIL topology by enumerating `android.hardware.radio@1.x::IRadio/slotN` from hwservicemanager and generating `binder.conf`.
+**Tier 0 — derived at runtime (target: everything).** `luneos-device-config` derives: HAL services, init gates, node permissions (from `/android/{vendor,odm,system}/etc/init/**.rc`); display density from `ro.sf.lcd_density`, geometry from hwcomposer/DRM; partitions by name plus `parse-android-dynparts`; vendor API level from `ro.vndk.version`, or `ro.vendor.build.version.sdk` where `ro.board.api_level` is a YYYYMM date (A15+ vendors); RIL topology by enumerating `android.hardware.radio@1.x::IRadio/slotN` from hwservicemanager and generating `binder.conf`.
 
 **Tier 1 — `deviceinfo` (declarative, small, UBports-compatible).** Only what genuinely cannot be read off the device — needed *before* it is running, or describes how to build for it: `deviceinfo_codename`, `deviceinfo_bootimg_header_version`, `deviceinfo_flash_offset_*`, `deviceinfo_kernel_clang_compile`, `deviceinfo_dtbo`, `deviceinfo_bootimg_tailtype`, plus a `quirks` list. Names kept verbatim from UBports/postmarketOS so their device configs can be consumed directly.
 
@@ -169,9 +171,9 @@ when one is needed. (Droidian, https://docs.droidian.org/porting-guide/debugging
 
 **Unknown devices must still boot:** if no `deviceinfo` matches, Tier 0 alone must produce a usable UI — default density from `ro.sf.lcd_density`, geometry from the compositor. That is the difference between "supports 30 devices" and "runs on pretty much every Android device".
 
-## Current status (August–September 2026)
+## Devices
 
-**One generic rootfs (`MACHINE=halium-arm64`, no kernel, no GSI baked in) boots the Pixel 3a on both the Halium 14.0 and 16.0 GSIs over its stock Android 12.1 vendor**, reaching `systemctl is-system-running = running` with 0 failed units, full UI, 32 audio sinks, working nyx, sensorfwd, bluebinder, bluetooth and ofono. The same build serves both GSIs. GSI tarballs built: 11.0, 13.0, 14.0, 16.0. `meta-halium` as a layer was dropped — everything lives in `meta-smartphone/meta-android`. Not started: installer & OTA, the `PACKAGE_ARCH` CI gate. Bluejay/panther have built, KMI-verified boot images from bitbake (see kernel-porting knowledge); mindphone (MT6739, arm32) has UI, wifi, BT and modem working.
+Per-device state lives in the `device-<codename>.md` files; each opens with a one-line status. The architecture was proven on sargo: **one generic rootfs (`MACHINE=halium-arm64`, no kernel, no GSI baked in) boots the Pixel 3a on both the Halium 14.0 and 16.0 GSIs over its stock Android 12.1 vendor**, `systemctl is-system-running = running`, 0 failed units. Every GSI machine since runs the 16.0 GSI. `meta-halium` as a layer was dropped — everything lives in `meta-smartphone/meta-android`. Not started: installer & OTA, the `PACKAGE_ARCH` CI gate.
 
 ### The seven Android 16 blockers on sargo (each only visible after the previous one)
 
@@ -207,9 +209,9 @@ Android's init is patched (51 patches under `system/core` alone) so the framewor
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| hwcomposer on A13+ — vendors moving to AIDL `IComposer` | No display = no port | libhybris merged HWC3/AIDL composer support Jan–Mar 2026 (PRs #578/#609); panther is the first test |
-| ACK-built GKI rejected by OEM vendor modules (Samsung, some MTK) | Device drops to Tier B | Keep Tier B; document per-device |
-| libhybris beyond Android 13 community-patched only | A15/16 devices experimental | Track `halium-16.0`; sargo already boots it |
+| hwcomposer on A13+ — vendors moving to AIDL `IComposer` | No display = no port | libhybris merged HWC3/AIDL composer support Jan–Mar 2026 (PRs #578/#609); no port has run it on hardware yet (panther needs it and has never been flashed) |
+| ACK-built GKI rejected by vendor modules (MediaTek mgk: q25) | ACK kernel unusable | Build from the vendor's own GKI tree and verify CRCs per device (device-q25.md) |
+| libhybris beyond Android 13 community-patched only | Every current port depends on those patches | Track `halium-16.0` |
 | One rootfs for all → one bug for all | Wider blast radius | A/B rootfs slots + writable-image dev mode |
-| Vendor API level ≠ Android version the user runs | Wrong GSI chosen | Read `ro.board.api_level`/`ro.vndk.version`, never `ro.build.version.release` |
+| Vendor API level ≠ Android version the user runs | Wrong GSI chosen | Read `ro.vndk.version`, or `ro.vendor.build.version.sdk` (A15+ `ro.board.api_level` is a YYYYMM date); never `ro.build.version.release` |
 | FBE/userdata encryption, AVB, locked bootloaders | Install fails | Installer preflight checks with clear errors |

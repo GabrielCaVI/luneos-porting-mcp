@@ -1,26 +1,29 @@
 # Device: sunfish (Google Pixel 4a) — Tier B Qualcomm, vendor modules and all
 
-A pre-GKI Snapdragon 730G (SM7125, platform `sm7150`) running the generic `halium-arm64` rootfs and an Android 16 GSI over its final Android 13 vendor. Closest relative in the tree is sargo, and it was modelled on it — same vendor, same Qualcomm/Adreno libhybris path, same A/B + boot-header-v2 arrangement. What makes sunfish its own case is that Google shipped **44 kernel modules on the vendor partition**, so the Tier B "rebuilt kernel refuses the stock modules" problem is not a footnote here, it is the port. Layer `meta-smartphone/meta-google`, `MACHINE=sunfish`, build tree `/media/herrie/LuneOS/wrynose/webos-ports`.
+Google Pixel 4a (`sunfish`), Qualcomm SM7150-AB / Snapdragon 730G, Tier B pre-GKI on a LineageOS 23.2 vendor; boots to the LuneOS UI, with our own build of its vendor modules.
+
+Runs the generic `halium-arm64` rootfs and an Android 16 GSI over a LineageOS 23.2 vendor (the phone arrived on /e/OS 13; Google's final stock release is Android 13). Closest relative in the tree is sargo, and it was modelled on it — same vendor, same Qualcomm/Adreno libhybris path, same A/B + boot-header-v2 arrangement. What makes sunfish its own case is its vendor kernel modules (Google's stock vendor ships 44, LineageOS 23.2's 41), so the Tier B "rebuilt kernel refuses the stock modules" problem is not a footnote here, it is the port. Layer `meta-smartphone/meta-google`, `MACHINE=sunfish`.
 
 ## Platform facts
 
 | Fact | Value |
 |---|---|
-| SoC | Qualcomm SM7125 (Snapdragon 730G), Adreno 618. `androidboot.hardware.platform=sm7150`, but `ro.board.platform=sm6150` — three different names for one chip, so match on `ro.hardware=sunfish` |
-| Reference build | `google/sunfish/sunfish:13/TQ3A.230805.001.S2/12655424:user/release-keys`, security patch 2023-08-05, `ro.vndk.version=33` |
-| Kernel | **4.14.355**, LineageOS `android_kernel_google_msm-4.14` branch `lineage-22.2` (SRCREV `b8cf65288a`). Pre-GKI → Tier B. The device-specific `android_kernel_google_sunfish` repo was abandoned at lineage-18.1 / 4.14.212 — do not use it |
+| SoC | Qualcomm SM7150-AB (Snapdragon 730G), Adreno 618. `androidboot.hardware.platform=sm7150`, but `ro.board.platform=sm6150` — several names for one chip, so match on `ro.hardware=sunfish` |
+| Vendor | **LineageOS 23.2** (`ro.vendor.build.version.sdk=36`), flashed by the kit (`vendor-los232.img`) so vendor and kernel come from one LineageOS revision |
+| Stock reference | `google/sunfish/sunfish:13/TQ3A.230805.001.S2/12655424:user/release-keys`, security patch 2023-08-05, `ro.vndk.version=33` — source of the boot-header values below |
+| Kernel | **4.14.357-openela**, LineageOS `android_kernel_google_msm-4.14` branch `lineage-23.2` (SRCREV `28f9290ae067`, the revision LineageOS 23.2's build-manifest names). Pre-GKI → Tier B. The device-specific `android_kernel_google_sunfish` repo was abandoned at lineage-18.1 / 4.14.212 — do not use it |
 | Toolchain | Google Clang **r416183b**, not OE's GCC. Not a preference — see below |
 | A/B | yes (`androidboot.slot_suffix`) |
 | Dynamic partitions | genuine `super` (launched on Android 10), not sargo's retrofit |
 | Storage | **UFS**: `/dev/sd*`, by-name at `/dev/block/platform/soc/1d84000.ufshc/by-name/` |
 | boot partition | **is** recovery (`BOARD_USES_RECOVERY_AS_BOOT`). Flashing LuneOS replaces recovery; keep the stock boot.img |
-| boot header | v2, pagesize 4096, kernel 0x00008000, ramdisk 0x01000000, tags 0x00000100, dtb 0x01f00000 (one 425,348 B FDT). Read out of the stock image, which **disagrees with BoardConfig-common.mk** on ramdisk and tags — the shipped image wins |
+| boot header | v2, pagesize 4096, kernel 0x00008000, **ramdisk 0x02000000**, tags 0x00000100, dtb 0x01f00000 (one FDT, 425,348 B in stock). Stock Google's image says ramdisk 0x01000000; the recipe uses `BoardConfig-common.mk`'s 0x02000000, which LineageOS builds with, because LineageOS's full-LTO + CFI kernel does not fit under 16 MiB. Tags follow the stock image (the board file says 0x01E00000) |
 | Builds | boot.img + initramfs only. The rootfs is `MACHINE=halium-arm64`; the GSI is chosen at install time |
 
 ## The vendor modules are the port — and we build them ourselves
 
-`/vendor/etc/init.insmod.sunfish.cfg` names 48 modules and the vendor partition
-ships ~41 of them: the whole QTI audio DLKM stack, `qcacld` wlan, `ftm5` touch,
+`/vendor/etc/init.insmod.sunfish.cfg` names 48 modules; Google's stock vendor
+ships 44 of them, /e/OS 13's 42 and LineageOS 23.2's 41: the whole QTI audio DLKM stack, `qcacld` wlan, `ftm5` touch,
 `drv2624` haptics. The vendor's config has `CONFIG_MODVERSIONS=y`, so they only
 load into a kernel whose exported-symbol CRCs match theirs. Without them there is
 no wifi, no audio, no sensors, no Bluetooth, no camera, no NFC and no
@@ -35,7 +38,7 @@ points at and which nearly every core type reaches; and `CGROUP_DEVICE` bumps
 `CGROUP_SUBSYS_COUNT`, which dimensions arrays inside `struct css_set`. Sampled
 over 164 CRCs from `fs/inode.o`, `drivers/base/{core,platform}.o`,
 `kernel/sched/core.o` and `kernel/module.o`: whole delta 143, `FANOTIFY` alone
-143, `SYSVIPC` alone 143, `CGROUP_DEVICE` alone 118, **delta minus those two: 0**.
+143, `CGROUP_DEVICE` alone 118, **delta minus those two: 0**.
 Everything else is CRC-free — including `PID_NS` and `USER_NS`, which move nothing
 (`struct nsproxy` is unconditional and `user_namespace`'s members are gated only by
 `PERSISTENT_KEYRINGS`/`SYSCTL`), so the namespace options were never the problem
@@ -48,18 +51,6 @@ Both stay on: `CGROUP_DEVICE` is used by 7 units in the shipped rootfs
 bluebinder, both openvpn templates), and dropping `FANOTIFY` alone would buy
 nothing while it does.
 
-> **Sep 2026: the SYSVIPC requirement was dropped.** PmLogLib no longer calls
-> `shmget()`/`shmat()` (`nm -D libPmLogLib.so.3.3.0 | grep -c shmget` -> 0), so
-> `# CONFIG_SYSVIPC is not set` is now correct everywhere and `CONFIG_IPC_NS` goes
-> with it. Anything below that treats it as mandatory, or describes working around
-> its CRC damage, is history - see kmi-crc-matching.md.
->
-> **It does not follow that the KMI got better.** Measured on sunfish: drift was
-> 8158 of 12823 exported symbols with SYSVIPC on and 8158 of 12823 with it off,
-> because `FANOTIFY` and `CGROUP_DEVICE` poison the same symbols independently.
-> Poison sets overlap, so drift is a max and not a sum - removing one poisoner
-> while another stays shows up as no improvement at all.
-
 **So build them instead.** The kernel comes from LineageOS's own tree at the
 revision their build used, so their modules are in it too, and ours match by
 construction:
@@ -69,8 +60,8 @@ vermagic=4.14.357-openela-g28f9290ae067     LineageOS 23.2's modules
 vermagic=4.14.357-openela-g28f9290ae067     ours
 ```
 
-All 41 are built here. It was 40 until Sep 2026, the gap being `rdbg.ko`: that
-driver had been disabled because `drivers/char/rdbg.c` trips
+All 41 of LineageOS 23.2's vendor modules are built here (the boot images up to
+rev 9 of the kit carried 40, without `rdbg.ko`). `rdbg.ko` had been disabled because `drivers/char/rdbg.c` trips
 `-Werror=designated-init`, which is a **GCC-only** warning added via `cc-option`,
 so it never reaches the clang build this kernel now uses — verified by compiling
 `drivers/char/rdbg.o` on its own with no `-Wno-error`. `CONFIG_MSM_RDBG=m` is back
@@ -123,10 +114,10 @@ There is **no `dsp` partition** on sunfish — `fstab.sm7150` has none, and the 
   ```
 
   `__cfi_slowpath` exists only in a CFI kernel, and `Unknown symbol` is the failure class no force-load can survive (kmi-crc-matching.md). **Rule: the authority is the vendor whose modules the device loads, not the OEM whose logo is on the case.** LTO is still a Kconfig *choice* — `# CONFIG_LTO_CLANG is not set` does nothing, you select `CONFIG_LTO_NONE=y` — but on this device you do not want to.
-- **The boot window is tight and worth watching.** Kernel at 0x8000, ramdisk at 0x01000000 → 16 MiB for everything before the ramdisk. `sunfish_check_boot_window` in the recipe fails the build rather than shipping a kernel that overwrites its own initramfs — nothing in bitbake notices this on its own, and the failure on-device is a silent non-boot. Measured headroom has ranged from 570,316 B (21–22 Sep, before the LTO/CFI corrections landed) to 1,032,296 B after them; adding the Bluetooth block cost 67,066 B. **Read those numbers out of `log.do_deploy*` in time order** — the files are timestamp-named, so a glob sorts them by build id, not by date, and it is easy to quote a stale one.
+- **The boot window is asserted at build time.** Kernel at 0x8000, ramdisk at 0x02000000 → 32 MiB for everything before the ramdisk; with stock's 0x01000000 (16 MiB) the LTO + CFI kernel would not fit. `sunfish_check_boot_window` in the recipe fails the build rather than shipping a kernel that runs into its own initramfs — nothing in bitbake notices this on its own. Treat it as a build-time invariant, not a diagnosis: sunfish is a header-v2 image loaded by ABL, where the window may not bind at all (boot-images.md § The window does not bind on every bootloader — surya proves it). The 30 Sep 2026 kit image's kernel section is 21,163,040 B, leaving 12,358,624 B of headroom. **Read the logged headroom out of `log.do_deploy*` in time order** — the files are timestamp-named, so a glob sorts them by build id, not by date, and it is easy to quote a stale one.
 - **`DTC_EXT` and `DTC_FLAGS=-@` are both mandatory.** The in-tree dtc is 1.4.4 and cannot parse the overlay sugar these dtsi files use (`&thermal_zones {` at the top level of a `/plugin/`); the vendor uses a newer prebuilt too. And the base dtb must carry `__symbols__` or the stock dtbo overlays have nothing to resolve against.
 - **The bootloader drops command-line arguments it does not recognise** (measured on sargo with a `zz.marker=1` canary), so nothing added to `ANDROID_BOOTIMG_CMDLINE` reaches `/proc/cmdline`. Anything LuneOS needs goes in `CONFIG_CMDLINE`; `LUNEOS_ENABLE_ADB=1` builds the initramfs debug shell's flag in.
-- `CONFIG_COMPAT_VDSO` off (no arm32 cross-gcc in the sysroot), `CONFIG_CC_WERROR` off, `CONFIG_MSM_RDBG` off (a real `-Werror=designated-init` that survives `CC_WERROR=n`).
+- `CONFIG_COMPAT_VDSO` off (no arm32 cross-gcc in the sysroot), `CONFIG_CC_WERROR` off.
 - **Bluetooth needs `BT_BREDR` and `BT_LE` spelled out.** They are `default y` in `net/bluetooth/Kconfig`, so every other LuneOS fragment just lists the protocols — but `sunfish_defconfig` turns both off explicitly, and RFCOMM/BNEP/HIDP all `depends on BT_BREDR`. List only the protocols and the fragment silently does nothing.
 - The **dtbo partition is left stock**. The eight `sm7150-sunfish-*` overlays select by `qcom,board-id`/`msm-id` inside each FDT rather than by the table header, which is why a base dtb from a different build still gets the right overlay. Expected to work; if the device does not boot with an otherwise sane kernel, build `dtbo.img` from this tree (needs AOSP `mkdtimg`, which OE does not package).
 
@@ -141,7 +132,7 @@ vermagic=4.14.336-gfe61ffb52659 SMP preempt mod_unload modversions aarch64
 ```
 
 `fe61ffb52659` is the head of `lineage-20` in `android_kernel_google_msm-4.14`,
-which matches the `api=33` (Android 13) the device reports. All 42 modules
+which matches the `api=33` (Android 13) that vendor reports. All 42 of its modules
 carried that identical string with no `+` or `-dirty`, so /e/OS applied no kernel
 patches of its own: they shipped LineageOS's tree as-is. Pinning that revision
 took `module_layout` from mismatching to matching — the branch tip
@@ -230,13 +221,14 @@ Atlas runs there. Diagnosed by querying the working device over adb, not by
 reasoning. When an app fails to launch, get a log that contains the launch and
 walk the nine-stage chain in the notes for sargo instead.
 
-## Status (24 Sep 2026)
+## Status (25 Sep 2026, kit rev 9)
 
 **Target is LineageOS 23.2**, not the /e/OS 13 the phone arrived with: that
 release is maintained for sunfish, and its build publishes the kernel revision
 (`build-manifest.xml` → `28f9290ae067`), the config it shipped (`IKCFG_ST` in its
 standalone `boot.img`) and its vendor modules (`vendor.img` via
 `payload_extract.py`) — so it can be reproduced exactly rather than inferred.
+Since rev 7 the kit flashes that vendor itself.
 
 Up, on hardware: display, touch (FTS built in), the GPU and EGL, modem and RIL
 (`SIM card OK`), cdsp, venus, the compositor, and the whole userspace — the owner
@@ -244,11 +236,10 @@ has been using Settings, Camera, Photos and Phone. TrustZone works since the
 Clang switch (`scm_call` 44 failures → 0), which is what unblocked PIL, the zap
 shader and therefore the GPU.
 
-Built but **not yet booted**: our own build of the 40 vendor modules, shipped in
-the boot image (rev 6 of the staging kit). If they load, wifi, audio, sensors,
-Bluetooth, camera, NFC and fingerprint should all return together, since every
-one of them was blocked behind that single problem. The three checks to run
-first:
+Our own module build has been booted: rev 7 staged the 40 modules but its rootfs
+lacked the overlay (see "Two traps found on hardware"); rev 8 ships both halves
+and rev 9 changed only the kernel. Whether wifi, audio and sensors came back with
+rev 8 is not recorded here. The checks:
 
 ```sh
 dmesg | grep -iE 'disagrees about version|Unknown symbol'   # expect nothing
@@ -256,7 +247,11 @@ lsmod | wc -l                                               # expect ~40
 dmesg | grep -i 'mount-android: overlaid'                   # the bind-mount
 ```
 
-Still open regardless: an **ofono 2.19 SEGV** right after the SIM file reads
+Open as of rev 9: camera (VINTF registration), fingerprint (the HAL never
+starts), and a display-manager/compositor desync behind random locking and an
+unreliable power button.
+
+Also open: an **ofono 2.19 SEGV** right after the SIM file reads
 (`Requested file structure differs from SIM: 6fb7`, restarting every nine
 seconds, no backtrace because `systemd-coredump` is disabled on the device), and
 the dtbo pairing has never been proven — our base dtb carries `__symbols__` as

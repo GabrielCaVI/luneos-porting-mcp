@@ -1,25 +1,31 @@
 # Building Halium GSIs for LuneOS
 
-The generic `/android` system image LuneOS mounts is a **Halium GSI**: an AOSP/LineageOS build of the `halium_arm64` (or 32-bit `halium_arm`) product from the `Halium/android` manifests, with hybris-patches applied. It is built ~once per Halium generation (9/11/13/14/16), never per device, and shipped as a tarball that the Yocto `android-system-image` recipes consume. This document records how the images are built, the traps hit on `halium-16.0` (lunch combo, version gates, removed modules), the device-tree patches required for a 16.0 GSI serving older vendors, and the complete recipe for building 32-bit `halium_arm` GSIs (needed for 32-bit-userland devices like mindphone/MT6739).
+How LuneOS builds the Halium GSIs it mounts as /android: halium_arm64 and halium_arm products, the halium-16.0 traps, device-tree patches and publishing.
+
+The generic `/android` system image LuneOS mounts is a **Halium GSI**: an AOSP/LineageOS build of the `halium_arm64` (or 32-bit `halium_arm`) product from the `Halium/android` manifests, with hybris-patches applied. It is built per Halium generation (9/11/13/14/16 so far), never per device, and shipped as a tarball that the Yocto `android-system-image` recipes consume; every current port runs 16.0. This document records how the images are built, the traps hit on `halium-16.0` (lunch combo, version gates, removed modules), the device-tree patches required for a 16.0 GSI serving older vendors, and the complete recipe for building 32-bit `halium_arm` GSIs (needed for 32-bit-userland devices like mindphone/MT6739).
 
 ## Where the trees and artifacts live
 
 | What | Where |
 |---|---|
-| Live Halium trees (with `.repo` + hybris-patches) | `/media/herrie/HaliumDisk/{11.0,13.0,14.0,16.0}` — note `~/Halium/11.0` is an empty skeleton, do not use |
-| Published generic GSIs | `webOS-ports/halium-images` GitHub releases |
-| 16.0 device-tree patches | `Herrie82/android_device_halium_halium_arm64` branch `herrie/16.0` (`92c00df`); file copies in `gsigki/halium16-device-patches/` |
-| GSI tarballs in the build's `DL_DIR` | `halium-luneos-<ver>-<date>-N-halium_arm64.tar.bz2` for 11.0, 13.0, 14.0, 16.0 |
+| Halium trees (with `.repo` + hybris-patches) | one checkout per generation (`<halium tree>/{11.0,13.0,14.0,16.0}`) |
+| Published GSIs | `webOS-ports/halium-images` GitHub releases |
+| 16.0 device-tree patches | `Herrie82/android_device_halium_halium_arm64` branch `herrie/16.0` (tip `25c6f12`) |
+| The 16.0 GSI the recipes use | pinned once in `meta-android/recipes-core/android-system-image/halium-luneos-gsi-16.inc` |
 
-Published `halium_arm64` releases (verified live):
+Published generic GSI releases (`gh release list -R webOS-ports/halium-images`):
 
-| Halium | Tag | Published |
-|---|---|---|
-| 9.0 | `halium-luneos-9.0-20240228-1-halium_arm64` | 2024-02-28 (with served `.sha256sum`, `7469662b…`) |
-| 10.0 | `halium-luneos-10.0-20230130-1-halium_arm64` | 2023-01-31 |
-| 11.0 | `halium-luneos-11.0-20240219-1-halium_arm64` | 2024-02-19 |
+| Release tag | Contents |
+|---|---|
+| `halium-luneos-9.0-20240228-1-halium_arm64.tar.bz2` | 9.0 arm64 (served `.sha256sum`, `7469662b…`) |
+| `halium-luneos-10.0-20230130-1-halium_arm64.tar.bz2` | 10.0 arm64 (pre-release) |
+| `halium-luneos-11.0-20240219-1-halium_arm64.tar.bz2` | 11.0 arm64 |
+| `halium-luneos-20260826` | 9.0, 11.0, 13.0, 14.0, 16.0 `halium_arm64`; 11.0 and 16.0 (`20260827-1`) `halium_arm` |
+| `halium-luneos-20260830` | 16.0 `halium_arm` |
+| `halium-luneos-20260910` | 16.0 `halium_arm64`, the first carrying VNDK 27–34 |
+| `halium-luneos-20261005` | 16.0 `halium_arm` (`20261005-1/-2`, `20261007-1`, `20261008-3`), 16.0 `halium_arm64` `20261007-1`, plus prebuilt vendor images for legacy devices |
 
-Newer tarballs (14.0/16.0, and the arm32 builds below) exist only locally / in `DL_DIR` — **publishing them is a standing action item**, since a fresh clone cannot reproduce an image otherwise. The build tooling itself lives in no repository — `halium-images` is release hosting only — so capturing the process as CI is a first-class task.
+The build tooling itself lives in no repository — `halium-images` is release hosting only — so capturing the process as CI is a first-class task.
 
 ## The basic build (arm64)
 
@@ -34,7 +40,7 @@ lunch <combo>          # see the 16.0 trap below
 m systemimage          # → out/target/product/halium_arm64/system.img
 ```
 
-Big machine, runs rarely, four times total. This single job replaces every per-device Android build LuneOS has ever done.
+Big machine, runs rarely, once per generation. This single job replaces every per-device Android build LuneOS has ever done.
 
 Verified properties of the generic image (unsparsed): it is **system-as-root** — `/init`, `/system`, `/vendor`, `/odm` at the image root, so `ANDROID_SYSTEM_IMAGE_DESTNAME = "android-rootfs.img"` stays correct and `pre-start.sh` takes its `[ -e /android/init ]` branch. `/vendor` inside it is a **real empty directory** (0755, gid 2000), a clean mount point for the device's stock vendor.
 
@@ -79,16 +85,17 @@ missing and no known rule to make it
 
 `frameworks/av/services/medialog` is gone, but `compat/media/Android.mk` links the library unconditionally for everything newer than Android 8, so `camera_service` has no rule to build. Fix direction: probe for the module by wildcard (the file already discovers `mediaserver` and `libmediaplayerservice` that way) rather than adding another version gate.
 
-## The four device-tree patches for a 16.0 GSI (`herrie/16.0`)
+## The device-tree patches for a 16.0 GSI (`herrie/16.0`)
 
-Against `Halium/android_device_halium_halium_arm64` at `8dbc6dc` (tip of `halium-14.0`, which the 16.0 manifest still points at). Pushed as `Herrie82/android_device_halium_halium_arm64` branch `herrie/16.0`:
+Against `Halium/android_device_halium_halium_arm64` at `8dbc6dc` (tip of `halium-14.0`, which the 16.0 manifest still points at). Pushed as `Herrie82/android_device_halium_halium_arm64` branch `herrie/16.0`, three commits:
 
 | patch | why |
 |---|---|
-| ship the VNDK 30 snapshot | carried from the 14.0 tree; superseded by the next one on 16, which only syncs prebuilts/vndk v31–v34 |
 | preload `libselinux_stubs` into vndservicemanager; ship VNDK 32 | a stock vendor's vndservicemanager aborts without selinuxfs, so nothing owns `/dev/vndbinder` and every vendor HAL blocks |
 | ship the VNDK 32 snapshot for Android 12.1 vendors | the 16 device tree shipped VNDK 34 alone; sargo's vendor needs 32 |
 | ship uncompressed APEXes (`PRODUCT_COMPRESSED_APEX := false`) | `mount-apexes.py` cannot mount a `.capex`, so conscrypt, media and media.swcodec were silently skipped on 16 |
+
+The published arm64 16.0 GSIs from `halium-luneos-20260910` on go further: `PRODUCT_EXTRA_VNDK_VERSIONS := 27 28 29 30 31 32 33 34`, every snapshot the tree carries (v30 copied in from the 14.0 tree, as for `halium_arm` below), so one arm64 GSI serves vendors from Android 8.1 to 14 and adding a device never means rebuilding the GSI. Cost ~40 MB of system.img per snapshot, uncompressed. That change is not on the `herrie/16.0` branch yet.
 
 Related 32-bit fix (in `device/halium/halium_arm`, not arm64): `init.halium.rc` preloaded `libselinux_stubs` from hardcoded `/system/lib64/` → vndservicemanager dead on 32-bit.
 
@@ -98,7 +105,7 @@ Needed for devices with 32-bit stock userland (mindphone: MT6739, 64-bit SoC run
 
 ### Halium 11 (the easy one — 16 minutes)
 
-In `/media/herrie/HaliumDisk/11.0`, create `device/halium/halium_arm` cloned from `halium_arm64` with:
+In the 11.0 tree, create `device/halium/halium_arm` cloned from `halium_arm64` with:
 
 - board include `generic_arm_ab` instead of `generic_arm64_ab`
 - no `core_64_bit.mk` inherit (zygote32 via core_minimal)
@@ -108,10 +115,10 @@ In `/media/herrie/HaliumDisk/11.0`, create `device/halium/halium_arm` cloned fro
 
 ### Halium 16 (three edits — 17m51s first full build)
 
-Built and verified at `/media/herrie/HaliumDisk/16.0`: system.img genuinely 32-bit-primary (vold ELF 32-bit ARM, zero `system/lib64`, 541 32-bit libs), containing `com.android.vndk.v30.apex` (48 MB) beside v32/v34 — so an Android-11 vendor is served. **Runtime-proven 13 Sep 2026: mindphone boots this 32-bit Halium 16 GSI on hardware over its Android 11 (VNDK 30) vendor** — the v30-port approach works end to end, not just at build time. The exact three edits:
+Built and verified in the 16.0 tree: system.img genuinely 32-bit-primary (vold ELF 32-bit ARM, zero `system/lib64`, 541 32-bit libs), containing `com.android.vndk.v30.apex` (48 MB) beside v32/v34 — so an Android-11 vendor is served. **Runtime-proven 13 Sep 2026: mindphone boots this 32-bit Halium 16 GSI on hardware over its Android 11 (VNDK 30) vendor** — the v30-port approach works end to end, not just at build time. The exact three edits:
 
 1. `device/halium/halium_arm` cloned from `halium_arm64`: BoardConfig includes `build/make/target/board/generic/BoardConfig.mk` (pure arm, armv7-a-neon, no `TARGET_2ND_ARCH`) — the ready-made `generic_arm_ab` board was **removed in 13/14**; `lineage_halium_arm.mk` drops the `core_64_bit.mk` inherit (mirror `aosp_arm.mk`); do **NOT** set `TARGET_USES_64_BIT_BINDER` (default-true + deprecated in 16).
-2. `cp -al /media/herrie/HaliumDisk/14.0/prebuilts/vndk/v30` into the 16.0 tree; `device.mk`: `PRODUCT_EXTRA_VNDK_VERSIONS := 30 32 34`.
+2. `cp -al <14.0 tree>/prebuilts/vndk/v30` into the 16.0 tree; `device.mk`: `PRODUCT_EXTRA_VNDK_VERSIONS := 30 32 34`.
 3. **The non-obvious one:** `packages/modules/vndk/apex/Android.bp` only declares `apex_vndk` blocks for v31–v34 — add a v30 `apex_vndk` block, or the `com.android.vndk.v30` module never exists and the package is *silently dropped* (`BUILD_BROKEN_MISSING_REQUIRED_MODULES`). This is NOT a soong API floor (`MinSupportedSdkVersion=21`, so 30 passes vndk.go's gate).
 
 Lunch note: Android 16's lunch wants product-release-variant and this tree's lunch doesn't split it — build with explicit env instead:
@@ -124,39 +131,41 @@ Residual risk was whether every Halium `PRODUCT_PACKAGES` entry links 32-bit —
 
 ## arm32 GSI feasibility matrix (verified against the on-disk trees, 2026-08-27)
 
-Two earlier "not feasible" notes were wrong; this table is the corrected state:
+Feasibility per generation:
 
 | Halium | arm32 feasible? | What it takes |
 |---|---|---|
 | 11.0 | ✅ trivial | clone device dir, `generic_arm_ab` board |
 | 13.0 | ✅ | identical state to 14 — no easier, so prefer 14 |
 | 14.0 | ✅ | board/product recreation only (`generic_arm_ab` gone → use `board/generic`); VNDK is NOT dismantled in 14 (that's Android 15), `prebuilts/vndk/v30` is synced, HIDL fully present (hwservicemanager, hidl-gen, composer@2.1), `aosp_arm.mk` still ships |
-| 16.0 | ✅ with v30 port | the 16 tree DOES ship `aosp_arm.mk` (32-bit-primary) and `board/generic`; HIDL works on 16 (sargo proves it). The ONLY real blocker is VNDK: 16 ships prebuilts/vndk v31–v34 only, and the halium_arm64 device.mk says outright "Android 11 vendors cannot be served from a 16 GSI". Solvable: v30 snapshot exists in the 13.0 AND 14.0 trees (729 MB, standard Android.bp), VNDK snapshots are AOSP-version-tied and forward-consumed — copy it in and add 30 to `PRODUCT_EXTRA_VNDK_VERSIONS` (+ the apex_vndk block, edit 3 above) |
+| 16.0 | ✅ with v30 port | the 16 tree DOES ship `aosp_arm.mk` (32-bit-primary) and `board/generic`; HIDL works on 16 (sargo proves it). The ONLY real blocker is VNDK: 16 ships prebuilts/vndk v31–v34 only, and the halium_arm64 device.mk at the time said outright "Android 11 vendors cannot be served from a 16 GSI". Solved: v30 snapshot exists in the 13.0 AND 14.0 trees (729 MB, standard Android.bp), VNDK snapshots are AOSP-version-tied and forward-consumed — copy it in and add 30 to `PRODUCT_EXTRA_VNDK_VERSIONS` (+ the apex_vndk block, edit 3 above) |
 
 Why sargo worked on 16 without any of this: its vendor is 12.1 (v32, already shipped); mindphone's vendor-11 needed the v30 port.
 
 ## Packaging and wiring into Yocto
 
-Package the built `system.img` as `halium-luneos-<ver>-<date>-N-<product>.tar.bz2` and point the machine's `android-system-image-<device>.bb` at it (`file://` while local; switch to a `webOS-ports/halium-images` release URL once published). The `.inc` does the sparse→ext4 conversion + `/android/{system,vendor,data,...}` symlinks and consumes `${UNPACKDIR}/system.img` in place (`mv` → `simg2img` → `rm`) — note modern trees use `${UNPACKDIR}`, not `${WORKDIR}`. The image installs as `android-rootfs.img` (system-as-root mode of the initramfs).
+Package the built `system.img` as `halium-luneos-<ver>-<date>-N-<product>.tar.bz2`, publish it as a `webOS-ports/halium-images` release, and bump `HALIUM_LUNEOS_GSI16_PV`/`_SHA256` in `halium-luneos-gsi-16.inc` (every machine moves together; a device that must stay behind overrides the weak assignments in its own recipe, as mindphone does for `halium_arm`). The `.inc` does the sparse→ext4 conversion + `/android/{system,vendor,data,...}` symlinks and consumes `${UNPACKDIR}/system.img` in place (`mv` → `simg2img` → `rm`) — note modern trees use `${UNPACKDIR}`, not `${WORKDIR}`. The image installs as `android-rootfs.img` (system-as-root mode of the initramfs).
 
-Example selection pattern (sargo, Test A — switch between device image and GSI without refetch):
+Example selection pattern (sargo — GSI or the old device build, stock or shipped vendor):
 
 ```bitbake
-SARGO_ANDROID_SYSTEM ?= "gsi"     # or "device"
+SARGO_ANDROID_SYSTEM ?= "gsi"     # or "device": the old sargo-specific Halium 9 build
+SARGO_ANDROID_VENDOR ?= "none"    # "none": mount the phone's own /vendor; "device": ship vendor.img
 
-SRC_URI = "\
-    ...halium-luneos-9.0-${PV}-${MACHINE}.tar.bz2;name=device;subdir=device \
-    ...halium-luneos-9.0-${GSI_PV}-halium_arm64.tar.bz2;name=gsi;subdir=gsi \
-"
+SRC_URI = ".../${SARGO_GSI_RELEASE}/${SARGO_GSI_TARBALL};name=gsi;subdir=gsi"
+# the device tarball is fetched only when one of the two knobs asks for it
+SRC_URI += "${@d.getVar('SARGO_DEVICE_URI') if 'device' in (d.getVar('SARGO_ANDROID_SYSTEM'), d.getVar('SARGO_ANDROID_VENDOR')) else ''}"
 
 do_install:prepend() {
     cp ${UNPACKDIR}/${SARGO_ANDROID_SYSTEM}/system.img ${UNPACKDIR}/system.img
-    cp ${UNPACKDIR}/device/vendor.img ${UNPACKDIR}/vendor.img
+    rm -f ${UNPACKDIR}/vendor.img
+    if [ "${SARGO_ANDROID_VENDOR}" = "device" ]; then
+        cp ${UNPACKDIR}/device/vendor.img ${UNPACKDIR}/vendor.img
+    fi
 }
 ```
 
-Target end state (plan §6.3): one recipe per generation, keyed to vendor API level —
-`android-system-gsi-29` (Halium 9.0 → VNDK 28/29), `-30` (11.0), `-33` (13.0 → VNDK 31/32/33), `-36` (16.0, experimental) — deployed as standalone artifacts the installer picks, not baked into `luneos-image`.
+Not built yet: the GSI as a standalone artifact the installer picks per device, rather than an `android-system-image-<device>` recipe in the image. With the 16.0 GSI carrying VNDK 27–34, one GSI per architecture would cover every current vendor.
 
 When bumping a machine to a newer GSI generation, also bump `PREFERRED_VERSION_android-headers-halium` (mindphone went `11.0%` → `16.0%`) and rebuild libhybris — **android-headers track the GSI, not the vendor**.
 
@@ -172,6 +181,6 @@ Also do not rely on `mirrors.lolinet.com/firmware/halium/GSI` — not updated si
   the VNDK APEX for VNDK 28 and 30 vendors (gralloc via libqdutils; see hal-userspace.md).
 - `vendor/halium/droidmedia` minimedia.cpp: `configureRpcThreadpool(5, false)` — without it a HAL1
   takePicture() deadlocks minimediaservice against the HAL.
-- Both are in the halium_arm GSI built as halium-luneos-16.0-20261008-3 (not published at the time of
-  writing). Rebuilding after a linkerconfig-only change takes ~20 s; check that
+- Both are in the halium_arm GSI `halium-luneos-16.0-20261008-3`, published in the `halium-luneos-20261005`
+  release. Rebuilding after a linkerconfig-only change takes ~20 s; check that
   `variableloader.cc` was recompiled (it is installed into the runtime APEX, not /system/bin).

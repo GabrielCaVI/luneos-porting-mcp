@@ -1,9 +1,10 @@
 # Kernel Porting for LuneOS (GKI Tier A and Legacy Tier B)
 
-This document is the distilled kernel-porting method from the LuneOS GSI/GKI work
-(Pixel 6a `bluejay`, Pixel 7 `panther`, MT6739 `mindphone`, Pixel 3a `sargo`).
-The core insight: on GKI devices (Android 12+, kernel ≥5.10) you build **one kernel
-per KMI, not per device** — the stock vendor modules keep loading because the KMI is
+The LuneOS kernel-porting method: one GKI kernel per KMI on Tier A devices, a per-device vendor BSP kernel on Tier B, and how to verify both before flashing.
+
+Distilled from the LuneOS GSI/GKI work (Pixel 6a `bluejay`, Pixel 7 `panther`,
+MT6739 `mindphone`, Pixel 3a `sargo`). The core insight: on GKI devices
+(Android 12+, kernel ≥5.10) you build **one kernel per KMI, not per device** — the stock vendor modules keep loading because the KMI is
 binary-stable — while pre-GKI devices need a per-device kernel built from the vendor
 BSP source (Tier B). Both tiers hinge on the same three steps: extract the stock
 config, compute the LuneOS delta with `mer_verify_kernel_config`, and (Tier A only)
@@ -28,25 +29,15 @@ directly answers the migration plan's open question 2 for a real GKI device:
 
 - `DEVTMPFS` (+ `DEVTMPFS_MOUNT`)
 - `FHANDLE`
-- `SYSVIPC` (+ `IPC_NS`) — *but see the KMI-poison list below*
-
-> **Sep 2026: the SYSVIPC requirement was dropped.** PmLogLib no longer calls
-> `shmget()`/`shmat()` (`nm -D libPmLogLib.so.3.3.0 | grep -c shmget` -> 0), so
-> `# CONFIG_SYSVIPC is not set` is now correct everywhere and `CONFIG_IPC_NS` goes
-> with it. Anything below that treats it as mandatory, or describes working around
-> its CRC damage, is history - see kmi-crc-matching.md.
->
-> **It does not follow that the KMI got better.** Measured on sunfish: drift was
-> 8158 of 12823 exported symbols with SYSVIPC on and 8158 of 12823 with it off,
-> because `FANOTIFY` and `CGROUP_DEVICE` poison the same symbols independently.
-> Poison sets overlap, so drift is a max and not a sum - removing one poisoner
-> while another stays shows up as no improvement at all.
 - `TMPFS_POSIX_ACL`, `TMPFS_XATTR`
 - `VT`
 - netfilter/PPP/L2TP error items: `NF_LOG_IPV4/6`, `IP_NF_MATCH_RPFILTER`,
   `INET_AH`/`INET6_AH`, `INET_IPCOMP`, `PPP_*`, `L2TP_*`, `NET_L3_MASTER_DEV`,
   `DUMMY`, `QUOTA_NETLINK_INTERFACE`, `STATIC_USERMODEHELPER` off
 - Also off in stock: `USER_NS`, `PID_NS`, `AUTOFS_FS`, `SQUASHFS`, `CHECKPOINT_RESTORE`
+
+**Not required:** `SYSVIPC` (and with it `IPC_NS`). LuneOS does not use SysV IPC;
+leave `# CONFIG_SYSVIPC is not set`.
 
 **Already good in stock GKI**: `NAMESPACES`, `NET_NS`, `UTS_NS`, `CGROUPS`
 (+freezer, memcg, v2), `EXT4`, `F2FS`, `OVERLAY_FS`, `VETH`, `BRIDGE`, `TUN`,
@@ -55,8 +46,8 @@ directly answers the migration plan's open question 2 for a real GKI device:
 ### Step 2: Understand the KMI/MODVERSIONS constraint
 
 GKI kernels build with `CONFIG_MODVERSIONS=y` (`MODULE_SIG_FORCE` is **not** set on
-bluejay). Config options that add fields to core structs (e.g. `CONFIG_SYSVIPC`
-adds `task_struct.sysvsem`) change the genksyms CRCs of exported symbols. Under
+bluejay). Config options that add fields to core structs (e.g.
+`CONFIG_NET_L3_MASTER_DEV` adds `l3mdev_ops` to `struct net_device`) change the genksyms CRCs of exported symbols. Under
 MODVERSIONS, the stock vendor modules (vendor_boot dlkm fragment + `vendor_dlkm`,
 or on A13-launch devices `vendor_kernel_boot` + `vendor_dlkm`) then **refuse to
 load** against your rebuilt kernel — and losing them loses the whole Tier A property.
@@ -74,26 +65,20 @@ tools/bazel build --config=use_source_tree_aosp \
   //aosp:kernel_aarch64
 ```
 
-Drift measured with `symvers-drift.py`, load-compatibility with `kmi-crc-check.py`:
+Drift measured with `symvers-drift.py`, load-compatibility with `kmi-crc-check.py`.
+The bisect was cumulative: the full fragment drifted 3145 exported-symbol CRCs and
+failed 203/203 modules; with `FANOTIFY` and `NET_L3_MASTER_DEV` out drift was **0** and **2/203** failed, with
+or without `PID_NS`.
 
-| Round | Removed | Drift | Modules failing |
-|---|---|---|---|
-| full fragment | — | 3145 | 203/203 |
-| 1 | SYSVIPC, SYSVIPC_SYSCTL, IPC_NS | (n/a) | 190/203 |
-| 2 | + FANOTIFY | 1214 | 162/203 |
-| 3 | + PID_NS, NET_L3_MASTER_DEV | **0** | **2/203** |
-| 4 | PID_NS back in | **0** | **2/203** |
-
-**RESULT — KMI-poison list (final): `SYSVIPC` (+`IPC_NS`), `FANOTIFY`,
-`NET_L3_MASTER_DEV`, and `CGROUP_DEVICE`.** `CGROUP_DEVICE` was added from a later
-sunfish bisect (118 of 164 sampled CRCs on its own: `SUBSYS(devices)` bumps
-`CGROUP_SUBSYS_COUNT`, which dimensions arrays inside `struct css_set` and
-`struct cgroup`); whether it shows up on a given tree depends on whether the
-vendor config already enables it, so check rather than assume. Note also that the
-table above is cumulative and therefore hides the overlap: step 1 removes the
-SYSVIPC group and *still* leaves 190/203 failing, because FANOTIFY alone poisons
-almost the same set. **Drift is a max, not a sum** — attribute one option at a
-time (kmi-crc-matching.md has a three-minute per-object harness for it). Everything else in the fragment — DEVTMPFS(+MOUNT), FHANDLE,
+**RESULT — KMI-poison list for `android14-6.1` (bluejay, panther): `FANOTIFY`
+and `NET_L3_MASTER_DEV`.** Other kernels poison differently: on sunfish's 4.14
+tree it is `FANOTIFY` and `CGROUP_DEVICE` (kmi-crc-matching.md § Why this is not
+merely easier but *necessary*); whether `CGROUP_DEVICE` shows up on a given tree
+depends on whether the vendor config already enables it, so check rather than
+assume. **Drift is a max, not a sum** — poison sets overlap, so a cumulative
+bisect hides which option did what, and removing one poisoner while another
+stays shows no improvement. Attribute one option at a time
+(kmi-crc-matching.md has a three-minute per-object harness for it). Everything else in the fragment — DEVTMPFS(+MOUNT), FHANDLE,
 TMPFS_XATTR/POSIX_ACL, AUTOFS_FS, PID_NS, CHECKPOINT_RESTORE, VT,
 STATIC_USERMODEHELPER=n, QUOTA_NETLINK, the whole netfilter/PPP/L2TP block — is
 KMI-clean: zero CRC drift, 201/203 stock modules load (the 2 failures were
@@ -101,42 +86,29 @@ pre-existing ACK-pin skew, not config — see Step 5).
 
 The poison list transfers within a KMI — panther (same `android14-6.1` KMI)
 confirmed the same fragment unchanged (204/204 modules, 0 mismatches) — but it is
-**a property of the specific KMI/kernel tree, not of GKI universally**. Q25
-(MT6789, `android12-5.10`) proved the counter-case: the Droidian kernel fork it
-builds from (`gitlab.com/deathmist/kernel-android-common`, branch
-`common-android12-5.10-droidian`) carries *"GKI: use Android ABI padding for
-SYSVIPC task_struct fields"* — the SYSVIPC fields go into the reserved ABI
-padding instead of growing `task_struct`, the CRCs do not move, and **SYSVIPC is
-safe on that KMI**. The difference is that patch, not the kernel version. (The
-same fork hooks `find_get_pid` for `mali_kbase`/`mali_kbase_mt6789` and
-`snd_soc_jack_report` for `mt6358_accdet` — quirks needed once `PID_NS=y` puts
-the Mali driver's pid lookups in a namespace, and for headset detection.)
-
-The Q25 also has its own, different poison list, confirmed ABI-breaking for
-MT6789 on 5.10: `FANOTIFY`, `NF_TABLES`, `HUGETLBFS`,
-`NETFILTER_XT_MATCH_NFACCT`, plus `CGROUP_PIDS` and `POSIX_MQUEUE` per the
-Droidian wiki. deathmist's `droidian.config` enables them anyway and leans on the
-fork's force-load patch; **LuneOS turns all six off instead** — a force-loaded
-module that disagrees about a struct layout corrupts memory rather than failing
-cleanly, and "the stock vendor modules load legitimately" is the entire Tier A
-property.
+**a property of the specific KMI and kernel tree, not of GKI universally**. The
+Q25 (MT6789) is the counter-case: its stock kernel is MediaTek's *mgk* derivative
+of `android12-5.10`, so an ACK build failed 344 of 344 stock vendor modules and
+the port builds the device's own tree instead (`linux-zinwa-q25`). On that tree
+`USER_NS` stays off as well (off in the delta that took it from 344 failing to 0). `PID_NS` is clean there, as on bluejay. See device-q25.md.
 
 **The working rule: re-derive the poison list per KMI with `kmi-crc-check.py`;
 never transplant it between KMIs in either direction.**
 
 **Userland consequences of the poison list staying off:**
 
-- No SysV IPC — watch Qt `QSharedMemory`/`QSystemSemaphore` users.
 - No fanotify (systemd is fine without it).
 - No VRF/l3mdev (ofono is fine).
-- **LXC must not unshare the IPC namespace** (PID_NS is available; IPC_NS is not).
+- **LXC must not unshare the IPC namespace** (`IPC_NS` is off; `PID_NS` is
+  available), nor the user namespace where `USER_NS` is off (stock GKI, Q25):
+  `lxc.namespace.keep = ipc user`.
 
 Escape hatch stays: rebuild all google-modules from source (option B, below) and
 ignore KMI entirely.
 
 Final `mer_verify_kernel_config` on the shipped bluejay config
-(`mer-check-luneos.txt`): 5 errors, all accounted for — SYSVIPC +
-NET_L3_MASTER_DEV (deliberate), NF_LOG_IPV4/6 (checker predates the 5.13
+(`mer-check-luneos.txt`): 5 errors, all accounted for — SYSVIPC (not needed) +
+NET_L3_MASTER_DEV (KMI-poison), NF_LOG_IPV4/6 (checker predates the 5.13
 `NF_LOG_SYSLOG` rename; we set it =y), DUMMY=y (stock Android value; the checker
 wants n, contradicting its own stock run).
 
@@ -155,6 +127,10 @@ wants n, contradicting its own stock run).
    stock set's `__crc_*` exports. Target: **0 modules would fail to load**.
 4. `symvers-drift.py` quantifies exported-symbol CRC drift between a baseline
    symvers and yours — use it to bisect a config fragment when modules fail.
+5. On the device, count the right message. `dmesg | grep -c "Unknown symbol"`
+   returned **400** on a healthy MP01 boot — dependency-ordering noise from the
+   module-load retry loop (`tcpc_class: Unknown symbol pd_dbg_info`), resolved on
+   a later pass. The CRC message is **"disagrees about version"**. Count that one.
 
 Bluejay baseline (stock config, from-source build): 201/203 factory
 vendor_boot-dlkm modules load-compatible, 0 CRC mismatches. Panther:
@@ -231,7 +207,8 @@ same project set (only needed for option B on panther).
 - LuneOS fragment: `luneos/luneos_defconfig` (+ a BUILD.bazel filegroup), applied
   via `--//build/kernel/kleaf:defconfig_fragment=//luneos:luneos_defconfig`.
   Archived copy: `gsigki/bluejay/luneos_defconfig`.
-- Kernel-only build (what ships):
+- Kernel-only build (the Kleaf route; the Yocto recipe below builds the same
+  kernel with plain kbuild):
   ```
   tools/bazel build --config=use_source_tree_aosp \
     --//build/kernel/kleaf:defconfig_fragment=//luneos:luneos_defconfig \
@@ -250,15 +227,16 @@ comment lines into the expected value** — so a fragment must not mention, even
 in a comment, a symbol it declares. The KMI-poison comment block in the bluejay
 fragment is safe only because it names symbols the fragment never declares.
 
-**Second KMI in the Yocto tree** (added for Q25, 12 Sep 2026): a
-`linux-halium-gki_5.10.bb` recipe now sits beside the 6.1 one; boot-image
-machines gate on `GKI_BOOTIMG = "1"` in their own machine conf (the recipe moved
-out of a meta-google `^(bluejay|panther)$` regex); `GKI_KERNEL_IMAGE_NAME` lets a
+**GKI boot-image machines in the Yocto tree** (generalised for Q25, 12 Sep
+2026): `luneos-bootimg-gki` lives in meta-android and machines opt in with
+`GKI_BOOTIMG = "1"` in their own machine conf; `GKI_KERNEL_IMAGE_NAME` lets a
 machine ask for `Image.gz` instead of `Image.lz4`; and `GKI_CLANG_DIR` /
-`GKI_BUILD_TOOLS_DIR` are machine-scoped in local.conf because android12-5.10
-wants clang **r416183b** while android14-6.1 wants **r487747c**. bluejay/panther
-now declare `GKI_BOOTIMG = "1"` + `PREFERRED_VERSION_linux-halium-gki = "6.1%"`
-explicitly. See device-zinwa-q25.md for the 5.10 case study.
+`GKI_BUILD_TOOLS_DIR` are machine-scoped in local.conf because the Q25's 5.10
+kernel wants clang **r416183b** while android14-6.1 wants **r487747c**.
+bluejay/panther declare `GKI_BOOTIMG = "1"` +
+`PREFERRED_VERSION_linux-halium-gki = "6.1%"`. The only `linux-halium-gki`
+recipe is the 6.1 one; the Q25 builds its device tree with `linux-zinwa-q25`
+(device-q25.md).
 
 ### One kernel per KMI, literally
 
@@ -275,15 +253,20 @@ One GKI per KMI, shipped identically on gs101 and gs201. The LuneOS Tier A kerne
 UEVENT_HELPER) is a drop-in for panther with **no rebuild, no second 10 GB sync**.
 Re-run `kmi-crc-check.py` against the new device's own `.ko` set to confirm.
 
-### The kernel deliberately stays outside bitbake
+### The kernel in bitbake: Google's toolchain, not OE's
 
-In the Yocto machines (`bluejay.conf`, `panther.conf`):
-`PREFERRED_PROVIDER_virtual/kernel = "linux-dummy"`, and `GKI_KERNEL_IMAGE` (set
-in local.conf) points at the Image that `build-bootimg.sh` produced. Rebuilding
-ACK with OE's cross toolchain would move the exported-symbol CRCs under
-MODVERSIONS and the stock vendor modules would stop loading — the whole Tier A
-property. `do_deploy[file-checksums]` hashes the file so a new kernel really does
-rebuild the boot images instead of returning stale sstate.
+`meta-android/recipes-kernel/linux-halium-gki/linux-halium-gki_6.1.bb` builds the
+ACK android14-6.1 kernel with the LuneOS fragment using Google's prebuilt clang
+17 (**r487747c**, the clang the KMI was frozen with) and plain kbuild — no Bazel,
+and **not** OE's cross toolchain, which has never been validated against this KMI;
+a silent CRC drift would only show up on the device as vendor modules that do not
+load. `luneos-bootimg-gki` (with `meta-android/classes/gki_bootimg.bbclass`)
+consumes it by default via `GKI_KERNEL_PROVIDER ?= "linux-halium-gki"`; setting
+`GKI_KERNEL_IMAGE` overrides that with an out-of-tree Image, which
+`do_deploy[file-checksums]` hashes so a new kernel really does rebuild the boot
+images instead of returning stale sstate. `PREFERRED_PROVIDER_virtual/kernel =
+"linux-dummy"` in `bluejay.conf`/`panther.conf` only means the rootfs carries no
+kernel.
 
 ### Option B escape hatch (own vendor modules)
 
@@ -447,14 +430,16 @@ Two lessons worth more than the technique:
 ### Stock vendor modules on a rebuilt Tier B kernel
 
 A rebuilt Tier B kernel refuses the phone's own modules. The LuneOS config
-fragment can move struct layouts (SYSVIPC, when it was still on, added two fields
-to `task_struct`),
-the stock defconfigs set `CONFIG_MODVERSIONS`, and the result is
-`disagrees about version of symbol module_layout` on every one of them. It is not
-a niche problem: on mindphone it is the MTK WMT combo driver (wifi/BT/GPS/FM core,
-which is not in the GPL kernel drop at all — only built-in adapter shims), and on
-sunfish it is **all 44 modules the vendor ships**, taking wifi, audio, the
-vibrator, vold's user-0 storage and both DSPs with them.
+fragment can move struct layouts (`NETCONSOLE` grows `struct net_device_ops`, see
+the Titan Pocket below), the stock defconfigs set `CONFIG_MODVERSIONS`, and the
+result is `disagrees about version of symbol module_layout` on every one of them.
+It is not a niche problem: on mindphone it is the MTK WMT combo driver
+(wifi/BT/GPS/FM core, which is not in the GPL kernel drop at all — only built-in
+adapter shims), and on sunfish it was every module the vendor ships, taking wifi,
+audio, the vibrator, vold's user-0 storage and both DSPs with them, until the
+port switched to building its own (kmi-crc-matching.md § Step −1). Where the
+kernel source includes the modules, build them; force-loading is for modules you
+cannot build.
 
 - set `CONFIG_MODULE_FORCE_LOAD=y` in luneos.cfg — this only makes forcing
   *possible*; something still has to ask for it,
@@ -469,9 +454,8 @@ vibrator, vold's user-0 storage and both DSPs with them.
   resolves `request_firmware()` against the *host* filesystem, not the
   container's.
 
-Force-loading stock modules worked on mindphone (wifi, BT and GPS all came up)
-and on sunfish. **It is only safe while every struct those modules touch has the
-stock layout.** `--force` skips the CRC check that would have caught a layout
+Force-loading stock modules brought up wifi, BT and GPS on mindphone. **It is
+only safe while every struct those modules touch has the stock layout.** `--force` skips the CRC check that would have caught a layout
 change, so a mismatch shows up as memory corruption, not as a load error. Tier B
 has an ABI to keep after all: not a KMI in the GKI sense, but the stock kernel's
 layout as seen by every prebuilt `.ko` on the vendor partition. This is the Tier
@@ -510,7 +494,8 @@ nothing.)
 3. For every differing symbol, check whether it appears inside the struct
    bodies prebuilt modules use: `task_struct`, `net_device`,
    `net_device_ops`, `sk_buff`, `sock`, `inode`, `file`, `device`,
-   `dev_pm_info`, `wiphy`, `wireless_dev`, `mm_struct`, `cred`. A regex over
+   `dev_pm_info`, `wiphy`, `wireless_dev`, `mm_struct`, `cred`, `user_struct`,
+   `css_set`, `cgroup`, `perf_event`. A regex over
    `struct X { ... };` in the tree's headers is enough to list the candidates.
 4. Anything that hits gets reverted to stock unless you build every module that
    uses that struct yourself.
@@ -542,7 +527,8 @@ On the Pocket: 1439 structs compared. Validation: compiling the stock side with
 layout exactly (`net_device_ops` 512 → 536 bytes, first difference at
 `ndo_set_vf_mac`; `net_device` gains `npinfo`). With the fixed config, 4
 differ, all harmless: `cgroup`, `cgroup_root`, `css_set` (extra cgroup
-controllers such as CGROUP_DEVICE, which LXC needs; cgroup-core internals) and
+controllers such as CGROUP_DEVICE, which systemd's `DeviceAllow=` uses;
+cgroup-core internals) and
 `user_struct` (FANOTIFY adds a field in tail padding: same size, same offsets).
 It also caught one the heuristic missed: CGROUP_PERF adds fields to
 `perf_event` and `perf_cpu_context`, which the vendor `met.ko` profiler uses,
@@ -570,11 +556,14 @@ What step 3 found on the Pocket, and what was done:
 | CGROUP_NET_PRIO | `net_device` (`priomap`, which changes `sizeof`, so `netdev_priv()` of every vendor netdev points at the wrong place) | off |
 | BLK_CGROUP (+ MEMCG, already on) → CGROUP_WRITEBACK | `inode` | BLK_CGROUP off, as stock. CGROUP_WRITEBACK has no prompt, so it cannot be turned off on its own |
 | CGROUP_PERF (found by the layout probe, not the heuristic) | `perf_event`, `perf_cpu_context` | off, as stock |
-| SYSVIPC (→ IPC_NS) | `task_struct`, after `comm`, before `files`/`nsproxy`/`signal` | off. Not needed since 15 Sep 2026 (section below); the container keeps the host IPC namespace (`lxc.namespace.keep = ipc user`) |
 
-What did *not* hit any of those structs and stayed on: FHANDLE, the namespaces
-except IPC_NS, CGROUP_DEVICE/FREEZER/PERF, NET_CLS_CGROUP, BT, RFKILL, VT,
-DEVTMPFS, FANOTIFY, CHECKPOINT_RESTORE, SQUASHFS, AUTOFS4. Also note what is
+What changed no struct the vendor modules use and stayed on: FHANDLE, the
+namespaces except IPC_NS, CGROUP_FREEZER, NET_CLS_CGROUP, BT, RFKILL, VT,
+DEVTMPFS, CHECKPOINT_RESTORE, SQUASHFS, AUTOFS4. FANOTIFY (`user_struct`) and
+CGROUP_DEVICE (`css_set`, `cgroup`) do change listed structs and also stayed on,
+because the layout probe showed the change harmless on this kernel: FANOTIFY's
+field lands in `user_struct`'s tail padding (same size, same offsets) and the
+cgroup structs are cgroup-core internals. Also note what is
 not a KMI concern at all: options that change *built-in* code only (e.g. the BT
 stack) are invisible to vendor modules unless they call into it.
 
@@ -597,9 +586,11 @@ matching vendor module before anything is ready. On the MP01 that pulled in
 `mtk_lpm` within a second of udevd starting, froze the SoC, and left the hardware
 watchdog bootlooping the device on every boot after the first. Symlink the vendor
 `.ko` into a private tree under `/run` instead, out of udev's sight and off
-persistent storage, and point `depmod -b` and `modprobe -d` at it. (This
-supersedes the "copy to /lib/modules + depmod" advice this section used to give;
-`mtk-load-modules.sh` carries the fix and the reasoning.)
+persistent storage, and point `depmod -b` and `modprobe -d` at it
+(`mtk-load-modules.sh` does this). This is about a *vendor* module set staged for
+force-loading. Modules built with your own kernel do belong in
+`/usr/lib/modules/<kver>`, where coldplug autoloading is what you want (see
+§ Shipping kernel modules to a device that flashes the generic rootfs).
 
 Two things that are easy to get wrong once the loading itself works:
 
@@ -607,15 +598,15 @@ Two things that are easy to get wrong once the loading itself works:
   `init.insmod.<hw>.cfg` interleaves `enable|<sysfs path>` lines that are what
   actually start the DSPs, and the node one of them writes to is created by a
   module earlier on the same list. Walk the file, do not grep the module names
-  out of it. On sunfish, missing `adsp_loader_dlkm.ko` means no
-  `/sys/kernel/boot_adsp/boot` to write to, which means no ADSP, which surfaces
-  as fastrpc "Transport endpoint is not connected" and a device that reports it
-  has no sensors.
+  out of it. On sunfish, a missing `adsp_loader_dlkm.ko` meant no
+  `/sys/kernel/boot_adsp/boot` to write to, which meant no ADSP, which surfaced
+  as fastrpc "Transport endpoint is not connected" and a device that reported it
+  had no sensors.
 - **A module that is shipped but not listed gets no chance to be forced.**
   `incrementalfs.ko` is on sunfish's vendor partition and absent from its cfg,
   because Android loads it itself with `finit_module` — a path with no force
-  option, so it fails with `Exec format error` and vold cannot prepare user 0.
-  Name those separately.
+  option, so while sunfish force-loaded vendor modules it failed with
+  `Exec format error` and vold could not prepare user 0. Name those separately.
 
 Reason from the **vendor partition**, not from the defconfig: what matters is
 which `.ko` files the phone actually carries, not which symbols are `=m` in the
@@ -674,8 +665,8 @@ series:
 ## Cross-distro config lists — use with care
 
 Both UBports and Droidian publish "required kernel config" lists for Halium-style
-ports. They are good references — **and both directly contradict our Tier A
-KMI-poison list.** Know why before copying anything.
+ports. They are good references — **but both enable options LuneOS leaves off,
+some of them KMI-poison on a Tier A kernel.** Know why before copying anything.
 
 UBports' minimal `halium.config`
 (https://docs.ubports.com/en/latest/porting/build_and_boot/standalone_kernel_build.html):
@@ -695,8 +686,9 @@ CONFIG_VT=y
 Droidian's requirements (docs + their 5.10 fragments) likewise mandate
 `SYSVIPC`, `IPC_NS`, `PID_NS`, `NET_NS`, `UTS_NS` (FANOTIFY commented out).
 
-**`SYSVIPC` + `IPC_NS` are on our KMI-poison list.** The conflict is
-architectural, not an error on either side: UBports and Droidian build a
+LuneOS does not need `SYSVIPC`/`IPC_NS`, and `USER_NS` stays off on the Q25's
+tree for KMI reasons (device-q25.md). The difference is architectural, not an
+error on either side: UBports and Droidian build a
 **per-device kernel package** and do not reload the *stock* vendor modules
 against it, so KMI preservation is not a constraint they have. LuneOS Tier A
 depends on exactly that property. The rule:
@@ -742,13 +734,15 @@ Tier A kernel; the rest are behavioral.
   RNDIS on. The LuneOS initramfs debug network tries both gadget functions, so
   neither needs adding to a fragment just for telnet — but a host talking to
   an ECM gadget must be Linux/macOS (no native Windows driver).
-- **`CONFIG_NETCONSOLE=y` + `CONFIG_NETCONSOLE_DYNAMIC=y` — Tier B only.**
-  Streams kmsg to the host over UDP (the initramfs attaches a dynamic target
-  after the gadget network is up; listen with `nc -ul 6666`), surviving
-  switch_root. In the athena and mindphone fragments. **KMI-poison on Tier A:
-  NETCONSOLE selects NETPOLL, which adds `npinfo` to `struct net_device` —
-  the same genksyms-CRC class as SYSVIPC, and net_device is touched by every
-  vendor wifi module.** The tenderloin mainline port instead bakes
+- **`CONFIG_NETCONSOLE=y` + `CONFIG_NETCONSOLE_DYNAMIC=y` — only on a kernel
+  that loads no prebuilt vendor network module.** Streams kmsg to the host over
+  UDP (the initramfs attaches a dynamic target after the gadget network is up;
+  listen with `nc -ul 6666`), surviving switch_root. NETCONSOLE selects NETPOLL
+  and `NET_POLL_CONTROLLER`, which add `npinfo` to `struct net_device` and insert
+  members into the middle of `struct net_device_ops`: KMI-poison on Tier A, and
+  on a Tier B kernel that force-loads stock wifi modules a panic (the Titan
+  Pocket above), unless the stock config already had `NET_POLL_CONTROLLER`.
+  Safe where the wifi driver is built with the kernel (athena). The tenderloin mainline port instead bakes
   `netconsole=6665@172.16.42.2/usb0,6666@172.16.42.1/` into `CONFIG_CMDLINE`
   for true pre-userspace logging — possible only because it also sets
   `CONFIG_USB_ETH=y` (built-in `g_ether` creates `usb0` at kernel boot).
@@ -778,7 +772,9 @@ Tier A kernel; the rest are behavioral.
   `stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=protected
   cgroup_disable=pressure cgroup.memory=nokmem selinux=0 droidian.lvm.prefer
   console=tty0` — notably `selinux=0` and `cgroup_disable=pressure`; `console=tty0`
-  also doubles as a boot-hang fix (see boot-images.md/debugging.md).
+  also doubles as a boot-hang fix (see boot-images.md/debugging.md). **Do not
+  copy `selinux=0` into a Halium port** (see § selinux=0 made mount(2) return
+  ENOENT on a CIP 4.19 tree).
 
 ### Vendor floor for the oldest GSI generation
 
@@ -802,101 +798,6 @@ remains is deliberate). Known checker quirks to not chase:
 
 Interpret errors as "explain or fix", not "fix": on bluejay the final config ships
 with 5 errors, every one accounted for.
-
-## CONFIG_SYSVIPC — required until 15 Sep 2026, not required since
-
-**Current answer: leave it off.** PmLog moved to POSIX shared memory, so the
-dependency described below is gone. The history stays because the failure it
-produced is the kind that cannot be diagnosed from a journal, and because any
-rootfs built before the change still has it.
-
-Check the rootfs you are about to ship rather than trusting either answer — one
-command, no device needed:
-
-```
-$ readelf --dyn-syms /usr/lib/libPmLogLib.so.3.3.0 | grep -E 'shm|sem'
-  UND shm_open@GLIBC_2.34      <- POSIX, needs no SysV IPC            (current)
-  UND shmget@GLIBC_2.17 …      <- SysV, CONFIG_SYSVIPC=y required   (pre-Sep-15)
-```
-
-Checked on `luneos-dev-image-halium-arm64` 20260924122732 during the surya
-port: only `shm_open`, and no `shmget`/`shmat`/`semget` anywhere in the library.
-A scan of `usr/{lib,bin,sbin,libexec}` for real SysV imports finds libc itself,
-libasound, libdevmapper, libcrypto, libperl, ntpd and the util-linux/valgrind
-IPC tools — **nothing on the LuneOS boot path**. The only `QSharedMemory` users
-are the two Qt Wayland `shm-emulation-server` plugins, which the hwcomposer
-path does not load.
-
-That retires the conflict this section used to describe: a Tier A device no
-longer has to choose between keeping the stock vendor modules loadable and
-having a compositor, and **the `android_kabi` padding patch below is not needed
-on a new port** — it stays documented because MP01 ships it and because the
-same technique applies to any option that grows `task_struct`.
-
-Keep `CONFIG_IPC_NS` off along with it (it depends on SYSVIPC) and tell LXC not
-to unshare the namespace: `lxc.namespace.keep = ipc user`.
-
-### The original finding (MP01, MT6789, 15 Sep 2026)
-
-Android does not use SysV IPC, so GKI configs ship `# CONFIG_SYSVIPC is not set`.
-LuneOS **did** need it: `libPmLogLib.so` called `shmget()`/`shmat()`. Without
-SysV IPC every `PmLogCtl` invocation blocked forever waiting for
-`com.webos.pmlogd` to answer, and PmLog is wired into far more than logging —
-`luna-service2` itself depends on `pmloglib`.
-
-Five units died on 90s timeouts with **no output of their own**:
-
-```
-surface-manager-daemon   db8-maindb   db8-mediadb   bluebinder   camera-droid-heal
-```
-
-`surface-manager.sh` calls `PmLogCtl def surface-manager` on its *first line*,
-above every log statement — so the compositor never starts and the screen never
-comes on, with nothing whatsoever in the journal to say why. `sh -x` as the
-ExecStart wrapper is what exposed it.
-
-**How to recognise it in two commands:**
-
-```
-$ ls -d /proc/sysvipc                       # absent  -> SYSVIPC is off
-$ strings /usr/lib/libPmLogLib.so.3 | grep -E 'shmget|shmat'
-```
-
-### Enabling it without destroying the KMI
-
-Turning `CONFIG_SYSVIPC=y` on normally appends `sysvsem`/`sysvshm` to the middle
-of `task_struct`, shifting every field after them. That moves `module_layout`
-and every other CRC: measured as **344 of 344 stock modules refusing to load**
-on this SoC. Do not just flip it.
-
-Park the two members in the reserved Android KABI padding instead. The whole
-trick is one line in `include/linux/android_kabi.h`:
-
-```c
-#ifdef __GENKSYMS__
-#define _ANDROID_KABI_REPLACE(_orig, _new)	_orig
-```
-
-genksyms computes CRCs from the `_orig` arm, so it still sees
-`u64 android_kabi_reservedN` exactly as the stock `CONFIG_SYSVIPC=n` kernel did,
-while the compiler sees a union carrying the real fields. Sizes pick the slots:
-`sysv_sem` is one pointer and fits one slot via `ANDROID_KABI_USE(6, ...)`;
-`sysv_shm` is a `list_head` (16 bytes) and no USE macro spans two slots, so
-write that union longhand across slots 7 and 8.
-
-Check before writing the patch: `CONFIG_ANDROID_KABI_RESERVE=y`,
-`CONFIG_MODVERSIONS=y`, which reserve slots are still free (slot 1 is usually
-`pf_io_worker`), and that `init/init_task.c` has no `.sysvsem` initializer.
-
-Result on MP01: `/proc/sysvipc` present, all 159 vendor modules loading,
-**0 "disagrees about version"**. Leave `CONFIG_IPC_NS` off — `shmget()` does not
-need it, it touches other structures, and LXC can be told not to unshare it with
-`lxc.namespace.keep = ipc user`.
-
-**Counting warnings correctly:** `dmesg | grep -c "Unknown symbol"` returned
-**400** on a perfectly healthy boot — that is dependency-ordering noise from the
-module load retry loop (`tcpc_class: Unknown symbol pd_dbg_info`), resolved on a
-later pass. The CRC message is **"disagrees about version"**. Count that one.
 
 ## The vendor_dlkm module set is never loaded on Halium (Tier A only)
 
@@ -938,18 +839,20 @@ wc -l < <vendor-modules>/dlkm/modules/modules.load
 # is a driver you are missing in it rather than in the early set?
 grep -iE 'touch|efuse|nvmem' <vendor-modules>/dlkm/modules/modules.load
 # on the device
-ls -d /proc/sysvipc; dmesg | grep -- -517
+dmesg | grep -- -517
 ```
 
 **Fix:** load them from `mount-android.sh`, after `vendor_dlkm` is mounted and
 before the container's init starts (meta-android, `load_vendor_dlkm_modules`).
-Guarded on `[ -d /vendor_dlkm/lib/modules ]`, so it is a no-op on devices
-without the partition. Note `modules.load` is a **list, not a dependency
+It looks for `modules.load` under each mount point the partition can land on
+(`/vendor_dlkm`, `$ANDROID_ROOT/vendor_dlkm`) and is a no-op on devices without
+it. Note `modules.load` is a **list, not a dependency
 order** — the same trap as in the initramfs — so make repeated passes and stop
 when a pass loads nothing new, rather than trusting the file's order.
 
 **Who is affected:** any Android 12+ / GKI device with a `vendor_dlkm`
-partition — MP01, and bluejay and panther when they start. **Not** affected:
+partition — MP01, where it was found; bluejay's factory image has one too, and
+panther has not been flashed yet. **Not** affected:
 pre-dynamic-partition devices, which have only one module set. mindphone
 (MT6739, Android 11, kernel 4.14, no super/vendor_boot) is the clearest example
 and is exactly why the same SoC vendor shows no such problem there. sargo has no
@@ -1070,37 +973,22 @@ walk that has no business failing. Worth confirming before relying on it.
 `androidboot.selinux=permissive` and nothing else. See the paired-token trap
 above for where the `selinux=0` came from.
 
-## LSE atomics on an ARMv8.0 SoC: turn them off, but they were not the bug
+## LSE atomics on an ARMv8.0 SoC: keep them off
 
 `CONFIG_ARM64_USE_LSE_ATOMICS` builds the ARMv8.1 large-system-extension atomics
 alongside the LL/SC ones and chooses at runtime with a static key. SDM660 is
-Cortex-A73/A53 - **ARMv8.0**, no LSE - so the feature is dead weight there.
+Cortex-A73/A53 - **ARMv8.0**, no LSE - so the feature is dead weight there. Turn
+it off to match the reference ROMs: a 4.19 tree marks clang's assembler
+`CONFIG_BROKEN_GAS_INST`, so LineageOS and UBports never enable LSE, while a Yocto
+build with binutils passes that test and gets a code-generation difference no
+shipped ROM has. On athena it fixed nothing; the mount ENOENT was `selinux=0`
+(section above).
 
-**Turn it off**, for a reason that has nothing to do with correctness: a 4.19
-tree marks clang's assembler `CONFIG_BROKEN_GAS_INST`, so LineageOS and UBports
-never enable LSE. A Yocto build with binutils passes that test, which is how a
-Yocto port acquires a whole-kernel code-generation difference that no shipped
-ROM has. Matching the references is worth more than an unusable optimisation.
-
-**It was not, however, the cause of athena's mount ENOENT**, and this file said
-otherwise for one commit. The disproof is in the logs: the *same kernel build*
-with LSE enabled mounted ext4 correctly under Android's recovery ramdisk. The
-discriminator was `selinux=0` (see the section above). The port shipped both
-changes in one image, which is how the wrong one got the credit - **a bundled
-fix attributes itself to whichever change you already suspected.**
-
-One thing here is real regardless, and was separately dismissed as cosmetic:
-
-```
-can't patch jump_label at 0xffffff939867af80
-WARNING: CPU: 0 PID: 1 at kernel/jump_label.c:385 __jump_label_update+0x98/0xa0
-```
-
-A static key that cannot be patched keeps whatever value it had, and static keys
-are precisely what gates runtime CPU-feature selection. It appears on every boot
-of this tree, working or not, so it explains nothing on its own - but on a tree
-where feature gating is known broken, do not assume any `CONFIG_*_USE_*` runtime
-switch is inert just because the hardware lacks the feature.
+The same tree logs `can't patch jump_label` (`WARNING ... kernel/jump_label.c:385
+__jump_label_update`) on every boot, working or not, so it explains no failure on
+its own. A static key that cannot be patched keeps whatever value it had, though,
+so on such a tree do not assume a runtime CPU-feature switch is inert just because
+the hardware lacks the feature.
 
 ## Shipping kernel modules to a device that flashes the generic rootfs
 
@@ -1117,6 +1005,12 @@ MACHINE_EXTRA_RDEPENDS = " … kernel-module-wlan … "
 own complete image, and there is no `MACHINE=<device>` rootfs here for it to
 land in. sargo has the same shape and carries an unresolved
 `# kernel-module-wlan` comment in its machine conf for exactly this reason.
+
+Two routes work. Ship the modules in the **machine initramfs** and stage them
+into place at boot (kmi-crc-matching.md § How to ship your own modules; sunfish,
+bramble), or **inject them into the built `rootfs.img`** as below (athena). Both
+are for modules built with your own kernel; a prebuilt vendor set stays on the
+vendor partition (see the `/lib/modules` warning in the Tier B section).
 
 On athena this is the difference between WiFi and no WiFi: `CONFIG_QCA_CLD_WLAN=m`
 is the only module in the config, and the vendor's own `wlan.ko` will not load
@@ -1220,5 +1114,4 @@ boot loop of a fixed period (77 s on the SM-T220, 57 s of it in the kernel). Fin
 in the ramoops console (`/sys/fs/pstore/console-ramoops-0`, readable in TWRP right
 after a loop reset). The fix is to make the file identical to the tag again; on
 this tree `net/bluetooth/` differed from v4.19.191 in that one file only, so check
-with `diff -r` before writing anything clever. It was *not* CONFIG_SYSVIPC or the
-cgroup options that an earlier attempt blamed.
+with `diff -r` before writing anything clever.

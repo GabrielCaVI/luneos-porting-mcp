@@ -1,5 +1,7 @@
 # Userspace HAL Stack and Per-Subsystem Bring-up
 
+How LuneOS reaches Android vendor HALs (libgbinder glue, libhybris graphics, derivation scripts) and how each subsystem was brought up.
+
 LuneOS talks to Android vendor HALs through the Mer/Sailfish-lineage glue stack
 (libgbinder-based), libhybris for graphics, and a set of derivation scripts that read the
 vendor's own configuration instead of shipping per-device files. This file maps the stack,
@@ -16,7 +18,7 @@ display/UI quirks.
 | Modem | `ofono-binder-plugin` (+ `libgbinder`, `libgbinder-radio`, `ofono-conf`) | Jolla's plugin, tracks IRadio HIDL *and* AIDL |
 | Audio | `pulseaudio-modules-droid` + `-droid-hidl` + `audiosystem-passthrough` | working (32 sinks on sargo) |
 | Bluetooth | `bluebinder` | working via HIDL `IBluetoothHci`; AIDL support unverified |
-| Sensors | `sensorfw` + `qtsensors-sensorfw-plugin` | working on HIDL; AIDL multihal unverified |
+| Sensors | `sensorfw` + `qtsensors-sensorfw-plugin` | working on HIDL; sensorfwd has an AIDL backend, not yet working on any port (surya: retest after the gbinder ApiLevel fix) |
 | GPS | geoclue bbappend → add `geoclue-providers-hybris` | to add |
 | Camera / HW video | `droidmedia` + `gst-droid` | replaces `qtubuntu-camera` (UT-era, dead); also gives HW decode to the webruntime |
 | Vibrator/LED/deviceinfo | `nyx-modules-hybris` | see nyx-modules notes; haptics needs legacy API (headers <11) |
@@ -47,8 +49,8 @@ is the source of truth; read it from the factory `vendor.img` before assuming an
   OMX 1.0 (droidmedia later ✓).
 - **Bluetooth: AIDL-only `IBluetoothHci`** — bluebinder is HIDL; AIDL support unverified.
   BT may be the first casualty; not boot-blocking.
-- **Sensors: AIDL multihal v3** — sensorfw's hybris adaptor is HIDL-era; needs checking.
-  Not boot-blocking.
+- **Sensors: AIDL multihal v3** — sensorfwd has an AIDL backend, not yet seen working on
+  any port (see device-surya.md). Not boot-blocking.
 
 **panther (Pixel 7, same bp4a build) — one genuine regression vs bluejay:**
 
@@ -63,9 +65,10 @@ is the source of truth; read it from the factory `vendor.img` before assuming an
 - Radio: AIDL `IRadio*` per slot (+ HIDL `@1.2::ISap`) — check ofono-binder-plugin's AIDL
   support. Sensors AIDL multihal V3, BT AIDL `IBluetoothHci` — same caveats as bluejay.
 
-**Rule:** on Halium the vendor API level (`ro.board.api_level` / `ro.vndk.version`) picks
-the GSI, and the vendor manifest picks which HAL transport each subsystem needs — never
-infer either from the Android version the device runs.
+**Rule:** on Halium the vendor's API level picks the GSI, and the vendor manifest picks
+which HAL transport each subsystem needs — never infer either from the Android version the
+device runs. From A15, `ro.board.api_level` is a YYYYMM date; the SDK number is
+`ro.vendor.build.version.sdk` (see "Before blaming AIDL" below).
 
 ## Mali under libhybris
 
@@ -186,9 +189,10 @@ binder-list -d /dev/hwbinder | grep ISensors    # sensors HAL up?
 
 If the interface is absent, ofono/sensorfw configuration is irrelevant — the vendor HAL
 is not up; go back to the container (init gates, vndservicemanager). If `binder-list`
-shows **nothing at all**, the gbinder **API level** may be wrong for this Android base —
-set it in `/etc/gbinder.conf` (valid levels per `gbinder_config.c` in
-mer-hybris/libgbinder). Full triage sequence in the debugging notes.
+shows **nothing at all**, the gbinder **API level** may be wrong for this vendor — see
+"Before blaming AIDL: is libgbinder even speaking the right protocol?" below for how
+`luneos-device-config` derives it and how to check it. Full triage sequence in the
+debugging notes.
 
 ## MediaTek connectivity (mindphone → generic recipe)
 
@@ -196,8 +200,11 @@ The MTK WMT combo driver (wifi/BT/GPS/FM core) is not in the GPL kernel drop —
 built-in adapter shims. The real drivers are stock vendor modules
 (`/vendor/lib/modules`: `wmt_drv`, `wmt_chrdev_wifi`, `wlan_drv_gen2`, `bt_drv`,
 `gps_drv`) whose CRCs disagree with a reconfigured kernel (`module_layout`), so:
-`CONFIG_MODULE_FORCE_LOAD=y` in the kernel fragment, and force-loading proved safe in
-practice on this device.
+`CONFIG_MODULE_FORCE_LOAD=y` in the kernel fragment. Force-loading worked on mindphone,
+but it is only safe while every struct those modules touch keeps the stock layout: on the
+Titan Pocket a NETCONSOLE-shifted `struct net_device_ops` made the force-loaded
+`wlan_drv_gen3` panic the kernel (kernel-porting.md, "The check: diff struct-affecting
+options against stock"; device-titanpocket.md).
 
 Refactored (2026-08-27) into the **generic recipe
 `meta-android/recipes-core/mtk-connectivity`** — the WMT/connac combo is common to the
@@ -476,7 +483,11 @@ Measured over Chromium's remote debugging port on sargo (1080x2220, 441 PPI):
 
 An Android 15 vendor registers its HALs with **`servicemanager` (AIDL)**, not
 `hwservicemanager` (HIDL). LuneOS daemons that only speak HIDL then fail against
-a vendor that is working perfectly. On athena, with the LineageOS 22 vendor:
+a vendor that is working perfectly. **Before concluding that, confirm libgbinder
+speaks the vendor's servicemanager protocol** (next subsection): a wrong
+`ApiLevel` produces the same symptoms against AIDL HALs that do exist.
+
+On athena, with the LineageOS 22 vendor:
 
 ```
 servicemanager: Found android.hardware.biometrics.fingerprint.IFingerprint/default …
@@ -499,14 +510,17 @@ while the vendor publishes, on AIDL: `biometrics.fingerprint`, `nfc`, `wifi`,
 `wifi.supplicant`, `wifi.hostapd`, `power`, `vibrator`, `light`, `health`,
 `usb`, `usb.gadget`, `memtrack`, `media.c2`.
 
-**This is one root cause behind several "broken" subsystems** - fingerprint,
-NFC and sensors all dead for the same reason. Expect it on every A15+ vendor,
-so diagnose it once rather than per-peripheral.
+That boot ran libgbinder on the API 31 preset against this A15 vendor (see "The
+build-time setting" below), so fingerprint, NFC and sensors sharing one cause
+is **unverified**: retest each at the correct `ApiLevel`. What stands
+independently of the protocol is that a HIDL-only daemon such as `biomd` cannot
+use a HAL the vendor only publishes on AIDL.
 
 ### Before blaming AIDL: is libgbinder even speaking the right protocol?
 
 **Check this first, on every device, before writing or hunting a backend.** It is
-one line of configuration and it invalidates the diagnosis below when wrong.
+one line of configuration and it invalidates any missing-backend diagnosis when
+wrong.
 
 `libgbinder` chooses its servicemanager protocol from `ApiLevel` in
 `/etc/gbinder.conf` (or any `/etc/gbinder.d/*.conf`, which override it). It picks
@@ -515,14 +529,26 @@ the highest preset **<=** that number, and presets exist only for
 silently selects the **API 31** preset, and the value must match the **vendor**
 the device boots against, not the device's age or the GSI.
 
-Get the vendor's real level from the vendor image itself:
+`ApiLevel` is an **SDK number**. Which property gives it depends on the vendor:
+
+| vendor | `ro.board.api_level` | use |
+|---|---|---|
+| up to Android 14 | an SDK number (e.g. 32) | `ro.board.api_level` |
+| Android 15+ | a **YYYYMM date** (202404 = A15, 202504 = A16) | `ro.vendor.build.version.sdk` (35 on A15) |
+| no board level | — | `ro.vndk.version`, then `ro.build.version.sdk` |
+
+A date written straight into `ApiLevel` is larger than every preset, so it always
+selects preset 36 (servicemanager `aidl6`) — an Android 16 protocol against an
+A15 vendor that speaks preset 35's `aidl5`. Measured on fajita and surya (both
+`ro.board.api_level=202404`, `ro.vendor.build.version.sdk=35`, no
+`ro.vndk.version`); see device-fajita.md § Android 15 vendors report a *dated*
+API level.
+
+Read the values from the vendor image itself:
 
 ```sh
 debugfs -R "cat /build.prop" vendor.img | grep -E "ro.vendor.build.version.sdk|ro.board.api_level|ro.vndk.version"
 ```
-
-or on the device: `getprop ro.board.api_level` (then `ro.vndk.version`, then
-`ro.build.version.sdk`).
 
 **The failure looks exactly like a missing backend.** On sunfish the NFC HAL was
 running (`vendor.st_nfc_hal_service`, pid 283), `nfcd` was healthy and had AIDL
@@ -551,7 +577,7 @@ out of the deployed images rather than trusting metadata:
 | athena | yes (`tar.gz`, no `ext4`) | **35** |
 | sargo, sunfish, bramble, bluejay, tangorpro, mp01, tissot-halium, mido-halium | no - they install the shared halium-arm64 image | **32**, always |
 
-And the trap that matters: **every staging kit checked (athena, sargo, bluejay,
+And the trap that matters: **every device kit checked (athena, sargo, bluejay,
 sunfish) shipped the shared halium-arm64 `rootfs.ext4`**, so athena ran the API
 31 preset against an A15 vendor for its entire life *even though its recipe
 correctly said 35*. The metadata was right; kit assembly discarded it. Where a
@@ -559,12 +585,14 @@ machine builds its own image, package from that image.
 
 #### How it is handled now
 
-`luneos-device-config` reads the vendor's API level at boot and writes
+`luneos-device-config` resolves the level at boot by the table above (dated
+values mapped to `ro.vendor.build.version.sdk`, else 202404→35 and 202504→36,
+with a warning for an unknown date) and writes
 
 ```
 /etc/gbinder.d/10-luneos-device.conf
 [General]
-ApiLevel = <vendor SDK>
+ApiLevel = <resolved SDK level>
 ```
 
 `gbinder_config.c` states outright that *"Files in the config directory overwrite
@@ -575,10 +603,6 @@ self-corrects a stale baked-in value. Verify on-device with:
 journalctl -b | grep -i "gbinder ApiLevel"
 ```
 
-**Consequence for the athena/A15 diagnosis below: it was formed while the
-protocol level was four presets stale.** Re-test fingerprint, NFC and sensors at
-the correct level before concluding a backend is missing.
-
 ### Telling a routing bug from a missing backend
 
 `hwservicemanager` being *alive* does not mean HIDL is fine, and its being
@@ -587,24 +611,21 @@ served `android.hardware.camera.provider@2.4::ICameraProvider/legacy/0` in the
 same boot where `nfcd` failed - so the transport was healthy and the fault was
 elsewhere.
 
-The cheap discriminator is **the shape of the interface name in the log**:
+A cheap first discriminator is **the shape of the interface name in the log**:
 
 | style | shape | served by |
 |---|---|---|
 | HIDL | `android.hardware.foo@1.2::IFoo/default` | `hwservicemanager`, `/dev/hwbinder` |
 | AIDL | `android.hardware.foo.IFoo/default` | `servicemanager`, `/dev/binder` |
 
-`nfcd` logged `registerForNotifications(android.hardware.nfc.INfc/default)` -
-an **AIDL-shaped name passed to a HIDL `IServiceManager` method**. That fails
-deterministically against a completely healthy system, in every boot, which is
-what distinguishes it from a race: a name of the wrong shape can never resolve
-on that node no matter how well the vendor is running.
+athena's `nfcd` logged `registerForNotifications(android.hardware.nfc.INfc/default)`,
+the same call that failed in sunfish's stale-`ApiLevel` case above, and athena
+was on the stale preset too. So fix `ApiLevel` and retest before anything else. Reading the line
+as an AIDL name routed to a HIDL `IServiceManager` on `/dev/hwbinder` is
+**unverified**; if it survives the correct `ApiLevel`, check which binder node
+the call went to — a routing fix is far smaller than a new backend.
 
-So before writing a new AIDL backend, check which binder node the call actually
-went to. If gbinder routed an AIDL name to `/dev/hwbinder`, the fix is
-servicemanager selection - far smaller than a backend.
-
-Note `-2147483647` (`INT32_MIN+1`) is not a standard binder exception code
+`-2147483647` (`INT32_MIN+1`) is not a standard binder exception code
 (`EX_TRANSACTION_FAILED` is `-129`), which suggests a local library status
 rather than a remote reply - i.e. the call failed before reaching a remote.
 

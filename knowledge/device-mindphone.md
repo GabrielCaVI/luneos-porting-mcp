@@ -1,6 +1,8 @@
 # Device: mindphone (MediaTek MT6739, 32-bit)
 
-The odd one out: a 64-bit-capable SoC running a **32-bit kernel and 32-bit userland**, Android 11 stock, non-dynamic partitions, boot header v2 — the legacy (Tier B) end of the spectrum. Most subsystems are **up**: UI, wifi, BT, dual-SIM modem, hardware keypad with T9. Also the port that produced the 32-bit `halium_arm` GSI (11 and 16). Working notes: `gsigki/mindphone/mindphone-notes.md`. Yocto: layer `meta-smartphone/meta-greentouch`, `MACHINE=mindphone`, build tree `/media/herrie/LuneOS/wrynose/webos-ports`.
+GreenTouch MindPhone (`mindphone`), MediaTek MT6739 with a 32-bit kernel and userland, Tier B on its Android 11 vendor; boots to the UI with wifi, BT and dual-SIM modem.
+
+The odd one out: a 64-bit-capable SoC running a **32-bit kernel and 32-bit userland**, Android 11 stock, non-dynamic partitions, boot header v2 — the legacy (Tier B) end of the spectrum. Most subsystems are **up**: UI, wifi, BT, dual-SIM modem, hardware keypad with T9. Also the port that produced the 32-bit `halium_arm` GSI (11 and 16). Yocto: layer `meta-smartphone/meta-greentouch`, `MACHINE=mindphone`.
 
 ## Platform facts (from the full A/B OTA payload; extracted with `payload_extract.py`)
 
@@ -39,12 +41,12 @@ The port was initially set up arm64 — wrong on every count. Fixed config: `TAR
 Build gotchas that cost real time:
 - gcc 14/binutils vs the 4.14 BSP: six layer patches (obsolete `#alloc` asm syntax ×28 files, `%llx` vs 32-bit phys_addr_t, drop `-Werror` from 30 MTK Makefiles, Silead gslX680 point-id object, GSL_GESTURE off + unguarded u64 division, `constexpr` C23 keyword in unifdef.c) + `CONFIG_FRAME_WARN=2048`.
 - webruntime (Chromium): the distro builds it thumb-disabled → lands in `cortexa8hf-neon-halium` while everything else is `cortexa8t2hf-…`; `defaulttunes.inc` must bridge the two arches per machine (`DEFAULTTUNE:mindphone` + `PACKAGE_EXTRA_ARCHS:append:mindphone`) or the image dies at wam-clang with "sstate manifest could not be found".
-- Stock vendor modules (wmt/wlan/bt/gps) CRC-mismatch our reconfigured kernel → `CONFIG_MODULE_FORCE_LOAD=y` in luneos.cfg; force-loading proved safe.
+- Stock vendor modules (wmt/wlan/bt/gps) CRC-mismatch our reconfigured kernel → `CONFIG_MODULE_FORCE_LOAD=y` in luneos.cfg. Force-loading has worked here, but it is only safe while the struct layouts those modules touch match stock — on the Titan Pocket a force-loaded `wlan_drv_gen3` panicked the kernel through a NETCONSOLE-shifted `struct net_device_ops` (kernel-porting.md § What happens when it breaks: Titan Pocket, 2 Oct 2026; device-titanpocket.md). This fragment carries NETCONSOLE too, so run the struct-layout check (kernel-porting.md § The check: diff struct-affecting options against stock, before flashing).
 
 ## halium_arm GSI (32-bit) — built for 11 AND 16
 
-- **11.0**: `device/halium/halium_arm` cloned from halium_arm64 in the `/media/herrie/HaliumDisk/11.0` tree (NOT `~/Halium/11.0`, an empty skeleton): board include `generic_arm_ab`, no `core_64_bit.mk` inherit, keep `TARGET_USES_64_BIT_BINDER := true` (binder wire ABI). 16-min build.
-- **16.0** (`/media/herrie/HaliumDisk/16.0`, and what the build now uses): three edits — (1) BoardConfig includes `build/make/target/board/generic/BoardConfig.mk` (the ready-made `generic_arm_ab` was removed in 13/14); drop `core_64_bit.mk`; do NOT set `TARGET_USES_64_BIT_BINDER` (default+deprecated); (2) hardlink `prebuilts/vndk/v30` from the 14.0 tree, `PRODUCT_EXTRA_VNDK_VERSIONS := 30 32 34` — the Android 11 vendor needs the v30 VNDK apex; (3) **the non-obvious one**: `packages/modules/vndk/apex/Android.bp` only declares `apex_vndk` for v31–v34 — add a v30 block or `com.android.vndk.v30` never exists and is *silently dropped*. Build with explicit env `TARGET_PRODUCT=lineage_halium_arm TARGET_RELEASE=bp4a TARGET_BUILD_VARIANT=userdebug; m systemimage`. Output verified genuinely 32-bit-primary (zero `system/lib64`) with the v30 apex present.
+- **11.0**: `device/halium/halium_arm` cloned from halium_arm64 in a Halium 11.0 source tree: board include `generic_arm_ab`, no `core_64_bit.mk` inherit, keep `TARGET_USES_64_BIT_BINDER := true` (binder wire ABI). 16-min build.
+- **16.0** (what the build now uses): three edits — (1) BoardConfig includes `build/make/target/board/generic/BoardConfig.mk` (the ready-made `generic_arm_ab` was removed in 13/14); drop `core_64_bit.mk`; do NOT set `TARGET_USES_64_BIT_BINDER` (default+deprecated); (2) hardlink `prebuilts/vndk/v30` from the 14.0 tree, `PRODUCT_EXTRA_VNDK_VERSIONS := 30 32 34` — the Android 11 vendor needs the v30 VNDK apex; (3) **the non-obvious one**: `packages/modules/vndk/apex/Android.bp` only declares `apex_vndk` for v31–v34 — add a v30 block or `com.android.vndk.v30` never exists and is *silently dropped*. Build with explicit env `TARGET_PRODUCT=lineage_halium_arm TARGET_RELEASE=bp4a TARGET_BUILD_VARIANT=userdebug; m systemimage`. Output verified genuinely 32-bit-primary (zero `system/lib64`) with the v30 apex present.
 - Packaged as `halium-luneos-16.0-20260827-1-halium_arm.tar.bz2`; `android-system-image-mindphone.bb` points at it, `android-headers-halium` bumped 11.0%→16.0%, libhybris rebuilt. **Flashed and confirmed running on hardware (13 Sep 2026):** mindphone boots the Halium 16 stack over its Android 11 (VNDK 30) vendor — the second runtime proof of a Halium 16 GSI on an old vendor after sargo (12.1 / VNDK 32), and the first on 32-bit.
 
 ## Install (fastboot; no custom recovery exists)
@@ -80,6 +82,6 @@ Regenerate userdata after an image rebuild: `mke2fs -q -F -t ext4 -L userdata -d
 - Device-only fixes to land in layers: GPU udev rule, keypad udev, product.env DRM guard (needs luna-surfacemanager patch), wayland watcher; kernel patches should move to shr-distribution `dnim/4.14.186`; the 16 recipe/machine edits belong on `herrie/mindphone-mt6739`, not `herrie/mindphone-platform-fixes`.
 - initramfs still lacks `udevadm`/`dumpe2fs`; machine.conf carries stale mmcblk numbers (harmless, fix to by-name).
 
-## Tools in `gsigki/mindphone/`
+## Tools
 
 `payload_extract.py` (pure-stdlib payload.bin lister/extractor), `unpack_bootimg.py` (header v0–v2), extracted `images/`, `unpacked-boot/`, stock config + mer-check reports.

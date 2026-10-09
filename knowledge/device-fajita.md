@@ -1,13 +1,14 @@
 # Device: fajita (OnePlus 6T) — the cheap Tier B Qualcomm case
 
+OnePlus 6T (`fajita`), Qualcomm SDM845, Tier B on a LineageOS 22.2 (Android 15) vendor: kernel and boot image build and are verified, never run on hardware.
+
 A pre-GKI Snapdragon 845 running the generic `halium-arm64` rootfs over a
-LineageOS 22.2 (Android 15) vendor. It is the **least work of any Tier B port in
+LineageOS 22.2 vendor. It is the **least work of any Tier B port in
 the tree**, and worth reading for that reason: no vendor kernel modules, no
 dynamic partitions, no retrofit metadata, no per-device rootfs. Everything that
 made sargo, sunfish and surya expensive is simply absent here, and what is left
 is one machine conf, one kernel recipe, one config fragment and one `deviceinfo`.
-Layer `meta-smartphone/meta-oneplus`, `MACHINE=fajita`, build tree
-`/media/herrie/LuneOS/wrynose/webos-ports`.
+Layer `meta-smartphone/meta-oneplus`, `MACHINE=fajita`.
 
 **UNVERIFIED on hardware: no OnePlus 6T has run this.** The kernel builds and the
 boot image was parsed and checked (see Status), but everything about the *device*
@@ -310,7 +311,8 @@ The fix resolves a dated value to the vendor build's own platform SDK
 declares no SDK, and warns rather than silently passing an unrecognised future
 date through. Checked against eight property combinations: both A15 vendors now
 select preset 35, an A16 date selects 36, and sargo (numeric 32 → preset 31) and
-sunfish (vndk 33 → preset 33) are unchanged.
+an Android 13 vendor such as sunfish's original /e/OS 13 (vndk 33 → preset 33)
+are unchanged. sunfish now runs a LineageOS 23.2 vendor (SDK 36), which selects 36.
 
 Worth generalising: **a property whose format changed is more dangerous than one
 that went missing.** A missing `ro.vndk.version` falls through to a fallback; a
@@ -351,14 +353,17 @@ parsed rather than assumed:
 
 ```
 header_version 1   header_size 1648   page_size 4096
-kernel   13,699,892 B @ 0x00008000
+kernel   13,697,391 B @ 0x00008000
 ramdisk   6,650,223 B @ 0x01000000     (the Halium initramfs)
-second            0 B @ 0x00f00000
+second            0 B @ 0x00000000
 tags                  @ 0x00000100
-os_version 0x1e000000 -> 15.0.0, no patch level
+os_version 0x1e0001a9 -> 15.0.0 / 2026-09
 recovery_dtbo 0 / 0
 image total 20,357,120 B of a 64 MB boot partition
 ```
+
+(Read back from the kit's `boot-fajita-luneos.img`; `second` and `os_version`
+match the shipping LineageOS image and the recipe's `ANDROID_BOOTIMG_*` values.)
 
 - **The `id` field matches AOSP `mkbootimg`'s sha1** over
   (kernel, ramdisk, second, recovery_dtbo) — so `android_bootimg_v2()`'s v1
@@ -378,7 +383,7 @@ image total 20,357,120 B of a 64 MB boot partition
   `sdm845-v2.dtb`. The `dtbo-base` mechanism described above does deliver the
   bases, and `sdm845-v2.1.dtb` — the one every fajita overlay declares — is
   there. This is the check that the header-v1 fix exists for.
-- **Kernel/ramdisk window: 3,044,556 B spare** (13,699,892 of 16,744,448), with
+- **Kernel/ramdisk window: 3,047,057 B spare** (13,697,391 of 16,744,448), with
   `KALLSYMS_ALL` off. Comfortable, so the window rule is satisfied on this device
   without relying on surya's relocating-ABL observation.
 
@@ -394,7 +399,7 @@ here were applied with `bitbake -f -c deploy`, which is what the yocto notes
 already tell you to do — and the "tainted from a forced run" warning is the only
 confirmation you get.
 
-Flash kit at `~/webos/LuneOS/staging/fajita-staging/`:
+Flash kit (the device's staging kit):
 
 | | |
 |---|---|

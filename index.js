@@ -283,13 +283,15 @@ const PROMPTS = {
             "1. Classify the device: Tier A (GKI, Android 12+/kernel 5.10+) or Tier B (legacy vendor kernel); " +
             "A12-launch vs A13-launch boot layout (init_boot or not); 32-bit vs 64-bit; anti-rollback state.\n" +
             "2. Obtain and analyze the stock images (factory zip or payload.bin), extract the kernel config " +
-            "via IKCONFIG, run mer_verify_kernel_config, and plan the config fragment mindful of the " +
-            "KMI-poison list (SYSVIPC+IPC_NS, FANOTIFY, NET_L3_MASTER_DEV).\n" +
-            "3. Build the kernel (ACK/Kleaf for Tier A, vendor tree for Tier B) and verify KMI with " +
+            "via IKCONFIG, run mer_verify_kernel_config, and plan the config fragment. The KMI-poison " +
+            "list is per KMI and tree: re-derive it with kmi-crc-check.py, never copy another device's " +
+            "(seen so far: FANOTIFY, NET_L3_MASTER_DEV, CGROUP_DEVICE, USER_NS). CONFIG_SYSVIPC is not needed.\n" +
+            "3. Build the kernel (ACK for Tier A, vendor tree for Tier B; a vendor's \"GKI\" may be a derivative " +
+            "that ACK cannot match, e.g. MediaTek mgk on q25 - then build the device tree) and verify KMI with " +
             "kmi-crc-check.py before flashing anything.\n" +
             "4. Build the boot image(s) with the LuneOS initramfs (module-order-aware init, cmdline " +
             "module params) and a debug variant with enable_adb.\n" +
-            "5. Create the Yocto machine, nyx-modules <machine>.cmake, and android-system-image recipe " +
+            "5. Create the Yocto machine (nyx module selection lives in nyx-modules-machines.inc) and the GSI pin " +
             "for the right GSI generation (match vendor API level).\n" +
             "6. Assemble the flash kit and install; then follow the debugging playbook for bring-up.",
         },

@@ -1,6 +1,8 @@
 # Device: panther (Google Pixel 7)
 
-Sibling of the bluejay port — same KMI, literally the same kernel binary — but an **A13-launch device**, so it exercises the `init_boot` split that bluejay cannot. No hardware has been flashed yet; everything below is host-side verified from the factory image. Working notes: `gsigki/panther/panther-notes.md` (method details in `../bluejay/bluejay-notes.md`).
+Google Pixel 7 (`panther`), Google Tensor G2 (gs201), GKI Tier A sharing bluejay's kernel; images built and KMI-verified host-side, never flashed on hardware.
+
+Sibling of the bluejay port — same KMI, literally the same kernel binary — but an **A13-launch device**, so it exercises the `init_boot` split that bluejay cannot. Everything below is host-side verified from the factory image.
 
 ## Platform facts (factory `panther-bp4a.251205.006`, Android 16 QPR2 — sha256 `4455f800…07d3e`)
 
@@ -24,29 +26,16 @@ sha256(panther unpacked-boot/kernel) == sha256(bluejay unpacked-boot/kernel)
 Linux 6.1.145-android14-11-gc1de4747ac59-ab14219743, clang 17.0.2
 ```
 
-One GKI per KMI, shipped identically on gs101 and gs201 — so our Tier A kernel (`bluejay-kernel/out-luneos-tierA/Image.lz4`, ACK `android14-6.1-2026-06_r7` = 6.1.172 + `luneos_defconfig` incl. UEVENT_HELPER) is a **drop-in, no rebuild, no second 10 GB sync**. The manifest branch `android-gs-pantah-6.1-android16` exists in the same tree (`private/devices/google/{gs201,pantah}`, `build_pantah.sh`) — only needed if we ever go option B (own vendor modules).
+One GKI per KMI, shipped identically on gs101 and gs201 — so our Tier A kernel (`linux-halium-gki_6.1.bb` in meta-android: ACK `android14-6.1-2026-06_r7` = 6.1.172 + `luneos_defconfig` incl. UEVENT_HELPER, Google's clang 17 r487747c; `panther.conf` sets `PREFERRED_VERSION_linux-halium-gki = "6.1%"`) is a **drop-in, no rebuild, no second 10 GB sync**. The manifest branch `android-gs-pantah-6.1-android16` exists in the same tree (`private/devices/google/{gs201,pantah}`, `build_pantah.sh`) — only needed if we ever go option B (own vendor modules).
 
 ## KMI check — 204/204, zero mismatches
 
 ```
-python3 ../bluejay/kmi-crc-check.py \
-    /media/herrie/LuneOS/bluejay-kernel/out-luneos-tierA/Module.symvers  vkb-modules
+python3 kmi-crc-check.py <kernel build dir>/Module.symvers  vkb-modules
 → 204 modules checked, 0 would fail to load
 ```
 
-Including `vh_mm.ko`/`vh_sched.ko` (the bumped ACK tag covers panther too). The KMI-poison list (`SYSVIPC`+`IPC_NS`, `FANOTIFY`, `NET_L3_MASTER_DEV` stay off) transfers unchanged. `modules.load` is non-topological here as well — **332 hard-dependency pairs backwards across 107 of 204 modules, plus 15 softdep edges** (`clk_exynos_gs.ko` line 16, exporter `cmupmucal.ko` line 45) — so the init v4 dependency-resolving loader is required, same as bluejay.
-
-> **Sep 2026: the SYSVIPC requirement was dropped.** PmLogLib no longer calls
-> `shmget()`/`shmat()` (`nm -D libPmLogLib.so.3.3.0 | grep -c shmget` -> 0), so
-> `# CONFIG_SYSVIPC is not set` is now correct everywhere and `CONFIG_IPC_NS` goes
-> with it. Anything below that treats it as mandatory, or describes working around
-> its CRC damage, is history - see kmi-crc-matching.md.
->
-> **It does not follow that the KMI got better.** Measured on sunfish: drift was
-> 8158 of 12823 exported symbols with SYSVIPC on and 8158 of 12823 with it off,
-> because `FANOTIFY` and `CGROUP_DEVICE` poison the same symbols independently.
-> Poison sets overlap, so drift is a max and not a sum - removing one poisoner
-> while another stays shows up as no improvement at all.
+Including `vh_mm.ko`/`vh_sched.ko` (the bumped ACK tag covers panther too). The KMI-poison list (`FANOTIFY`, `NET_L3_MASTER_DEV` stay off) transfers unchanged. `modules.load` is non-topological here as well — **332 hard-dependency pairs backwards across 107 of 204 modules, plus 15 softdep edges** (`clk_exynos_gs.ko` line 16, exporter `cmupmucal.ko` line 45) — so the init v4 dependency-resolving loader is required, same as bluejay.
 
 ## Images built
 
@@ -70,7 +59,7 @@ Yocto: `MACHINE=panther bitbake initramfs-android-image` + `luneos-bootimg-gki` 
 
 ## Flash kit
 
-`/media/herrie/LuneOS/panther-staging/` (athena-shape, pure fastboot): `install.sh` = vbmeta (verity/verification off) → boot → init_boot → `userdata-luneos.img` (3,774,873,600 B ext4, `rootfs.img` + `android-rootfs.img` side by side) → reboot; `make-userdata.sh`; distributable `luneos_panther_20260904.tar.gz`. rootfs/GSI hardlinked from bluejay-staging.
+The device's staging kit (athena-shape, pure fastboot): `install.sh` = vbmeta (verity/verification off) → boot → init_boot → `userdata-luneos.img` (3,774,873,600 B ext4, `rootfs.img` + `android-rootfs.img` side by side) → reboot; `make-userdata.sh`; distributable `luneos_panther_20260904.tar.gz`. rootfs/GSI shared with the bluejay kit.
 
 ## Open / cautions
 

@@ -1,11 +1,11 @@
 # Boot Image Construction for LuneOS Ports
 
-How to build, verify and flash LuneOS boot images across the three device layout
-classes met in practice: legacy header-v2 devices (mindphone, MT6739, Android 11),
-A12-launch GKI devices (bluejay, Pixel 6a — ramdisk still in `boot`), and
-A13-launch GKI devices (panther, Pixel 7 — ramdisk in its own `init_boot`
-partition). Covers the initramfs overlay technique, the hardware-diagnosed init
-patches (module ordering, module cmdline params, userdata resize), debug images,
+How to build, verify and flash LuneOS boot images for the three layout classes: legacy header v2, A12-launch GKI (ramdisk in boot) and A13-launch GKI (ramdisk in init_boot).
+
+The classes as met in practice: mindphone (MT6739, header v2, Android 11), bluejay
+(Pixel 6a, ramdisk still in `boot`) and panther (Pixel 7, ramdisk in its own
+`init_boot` partition). Covers the initramfs overlay technique, the hardware-diagnosed
+init patches (module ordering, module cmdline params, userdata resize), debug images,
 and where every fix now lives. **Always unpack the stock factory image first and
 verify the layout — every table below was verified from the actual images, not
 assumed.**
@@ -32,12 +32,12 @@ bluejay runs Android 16 but launched on A12, so it has no `init_boot`.
 
 ---
 
-## The kernel/ramdisk window — check this before every flash
+## The kernel/ramdisk window — a build-time invariant
 
-A boot header gives the kernel a *budget*, not just an address. The bootloader
-loads the kernel at `base + kernel_offset` and then writes the ramdisk at
-`base + ramdisk_offset`; if the kernel image is longer than the gap, the ramdisk
-lands on top of it and the bootloader jumps into a corrupted kernel.
+A boot header gives the kernel a *budget*, not just an address: the header asks the
+bootloader to load the kernel at `base + kernel_offset` and the ramdisk at
+`base + ramdisk_offset`, so a kernel longer than the gap overlaps the ramdisk's
+load address.
 
 ```
 window = ramdisk_offset - kernel_offset
@@ -47,7 +47,7 @@ On the common Qualcomm v0 layout (`base 0x0`, `kernel 0x8000`,
 `ramdisk 0x01000000`) that window is **16,744,448 bytes** — and everything in the
 kernel image counts, appended device trees included.
 
-**Assert it before flashing anything:**
+**Assert it at build time:**
 
 ```sh
 python3 - "$IMG" <<'EOF'
@@ -60,18 +60,20 @@ print("OVERLAP" if end > ra else f"fits, {ra-end:,} B spare")
 EOF
 ```
 
-**What it looks like when it is wrong is not reliably knowable**, which is the trap.
-The plausible story — bootloader accepts the image, hands off, jumps into a kernel
-whose middle has been overwritten, so nothing enumerates and no kernel-side logging
-(netconsole, `printk.devkmsg=on`) can report it — is a *prediction*, not an
-observation. On athena a 24.9 MB image against a 16.7 MB window coincided with a
-splash hang, and the overrun was treated as its cause. That was wrong: the splash on
-that device never clears, so it looks identical for a dead kernel and a working boot,
-and the oversized image was never shown to have failed at all. See device-athena.md.
+**Whether an overlap matters depends on the bootloader.** Loaders that honour the
+header offsets (the older Qualcomm `aboot` and its relatives) can be bound by it.
+ABL, the UEFI-based Qualcomm loader that boots header v2 images on Android-10-launch
+devices, relocates what it loads, and the offsets are close to advisory: surya
+(POCO X3 NFC, SM7150-AC) has the same nominal 16,744,448 B window and its shipping
+/e/OS kernel is 17,781,272 B, a megabyte over, booting every day. When a shipping
+image for that exact device violates the window, believe the device.
 
-Treat the window as a **build-time invariant to assert, not a diagnosis to reach for.**
-It is a genuine constraint and cheap to check; it is not evidence about a symptom you
-are looking at.
+**It has never been shown to cause a failure.** On athena a 24.9 MB image against
+the 16.7 MB window coincided with a splash hang and was blamed for it; the splash on
+that device never clears, so a dead kernel and a working boot look the same, and the
+oversized image was never shown to have failed (see device-athena.md). Treat the
+window as a cheap invariant to assert, not a diagnosis to reach for — and an image
+that fits is never evidence that something else is the bug.
 
 **Fix the kernel, not the address.** A published-and-working boot image for the
 device (a stock ROM, or another distro's port) proves its offsets on that
@@ -80,41 +82,19 @@ an unverified one — a bad trade while a boot failure is already being debugged
 Shrink the image instead: trim the appended device trees first (usually the biggest
 and most pointless chunk — see kernel-porting.md), then `CONFIG_IKHEADERS`,
 `CONFIG_KALLSYMS_ALL`, vendor debug loggers. `CONFIG_DEBUG_INFO` is a red herring:
-it lives in `vmlinux`, not in `Image`.
-
-Cross-check the offsets against another project's port of the same SoC before
-inventing them. UBports and Droidian both publish them as `deviceinfo`
-(`deviceinfo_flash_offset_ramdisk` etc.); Droidian's `kernel-info.mk` calls the same
-value `KERNEL_BOOTIMAGE_INITRAMFS_OFFSET`.
-
-### The window does not bind on every bootloader — surya proves it
-
-surya (POCO X3 NFC, SM7150) carries the same nominal layout as the Qualcomm v0
-devices — `base 0x0`, `kernel 0x8000`, `ramdisk 0x01000000`, so a 16,744,448 B
-window — but its **shipping /e/OS kernel is 17,781,272 B**, a megabyte past the
-line, and the device boots that image every day.
-
-The difference is the bootloader generation, not the device: surya is an
-Android-10-launch device with a header **v2** image loaded by **ABL** (the
-UEFI-based Qualcomm loader), which relocates the images it loads instead of
-honouring the header offsets the way the older `aboot` did. On such a device the
-offsets are close to advisory.
-
-So the rule reads: **assert the window, and when a shipping image for that exact
-device violates it, believe the device.** A stock image that boots is the
-strongest possible evidence about its own bootloader — stronger than the header
-arithmetic. What you must not do is conclude the reverse: an image that fits is
-never evidence that something else is the bug.
-
-It is still worth shrinking. On surya the two config levers above took the LuneOS
-kernel from 18,599,221 B to **14,782,385 B** — a 3.6 MB saving that also put it
-1,962,063 B *inside* a window its own vendor kernel overruns:
+it lives in `vmlinux`, not in `Image`. On surya the two config levers took the
+LuneOS kernel inside a window its own vendor kernel overruns:
 
 | | bytes | vs window |
 |---|---|---|
 | stock /e/OS 4.14.356 | 17,781,272 | over by 1,036,824 |
 | LuneOS, first build | 18,599,221 | over by 1,854,773 |
 | LuneOS, `IKHEADERS`+`KALLSYMS_ALL` off | **14,782,385** | **1,962,063 spare** |
+
+Cross-check the offsets against another project's port of the same SoC before
+inventing them. UBports and Droidian both publish them as `deviceinfo`
+(`deviceinfo_flash_offset_ramdisk` etc.); Droidian's `kernel-info.mk` calls the same
+value `KERNEL_BOOTIMAGE_INITRAMFS_OFFSET`.
 
 ## Header v0 with an appended device tree (Qualcomm aboot)
 
@@ -197,7 +177,12 @@ deploys `zImage-mindphone.fastboot` (= boot.img).
   ```
   avbtool make_vbmeta_image --flags 2 --padding_size 4096 --output vbmeta-disabled.img
   ```
-  (or `fastboot --disable-verity --disable-verification flash vbmeta ...`).
+  `--flags 2` sets only VERIFICATION_DISABLED; it is what the mindphone kit
+  ships, and it boots. `fastboot --disable-verity --disable-verification flash
+  vbmeta vbmeta.img` is **not** the same: it sets both bits (flags 3,
+  HASHTREE_DISABLED | VERIFICATION_DISABLED), as do the radon and surya vbmeta
+  images. Use flags 3 (`--flags 3`, or the two fastboot switches) unless a device
+  is known to need otherwise.
 - MTK lk in unlocked/orange state then boots the unsigned image. Optionally append
   an unsigned hash footer with avbtool so footer-expecting tooling stays happy;
   not required once verification is off.
@@ -390,10 +375,11 @@ Heritage note: hybris-boot (the ancestor of Halium's initramfs) signals the boot
 *stage* through its debug channel — telnet on port **23** means still in the
 initrd (pre-switch_root), port **2323** means post-switch_root, and marker files
 (`init_enter_debug` / `init_enter_debug2` on the data partition) halt boot at a
-chosen point deliberately (https://github.com/mer-hybris/hybris-boot). Both
-ideas — a stage marker visible from the host, and a halt-boot-here flag file —
-are worth porting to the LuneOS initramfs; the full debug flow is in
-debugging.md.
+chosen point deliberately (https://github.com/mer-hybris/hybris-boot). The LuneOS
+initramfs (`initramfs-scripts-halium` `init.sh`) has the first: on its debug path it
+starts telnetd at `192.168.2.15` port 23 and announces the stage in the USB
+gadget's iSerial string. There is no halt-boot flag file. The full debug flow is
+in debugging.md.
 
 ---
 
@@ -422,21 +408,25 @@ debugging.md.
   (30 Aug) fixes the "userdata image with only rootfs.img in it does not boot"
   case the flashed-userdata install relies on. Build initramfs from bitbake to
   get all of them: `MACHINE=<machine> bitbake initramfs-android-image`.
-- **`~/Documents/GitHub/luneos-bootimg-bluejay`** build repo: self-contained
+- **`luneos-bootimg-bluejay`** build repo (github.com/Herrie82/luneos-bootimg-bluejay): self-contained
   end-user build of the boot image only — `build-bootimg.sh` (repo sync → ACK
   pin → fragment → modules.bzl trim → kernel-only bazel build → initramfs patch
   → mkbootimg ×2), `luneos_defconfig`, `overlay/init-gki-modules.diff`,
   `tools/{kmi-crc-check,symvers-drift}.py`, `tools/module-order.py`,
   `tools/extract-vendor-modules.sh`.
-- **Yocto machines** (see kernel-porting.md for why the kernel stays outside
-  bitbake): `MACHINE=bluejay bitbake initramfs-android-image && MACHINE=bluejay
-  bitbake luneos-bootimg-gki` (same for panther) → boot images in
-  `tmp/deploy/images/<machine>/`. Supporting files:
-  `meta-android/lib/halium/bootimg.py`, `meta-android/classes/kernel_android.bbclass`
-  (routes header ≥3 to it; stops splitting an appended dtb for v3+),
-  `meta-android/classes/gki_bootimg.bbclass` (packs a prebuilt GKI kernel + the
-  machine initramfs), `meta-google/conf/machine/{bluejay,panther}.conf`,
-  `meta-google/recipes-bsp/gki-bootimg/luneos-bootimg-gki_1.0.bb`.
+- **Yocto machines**: `MACHINE=bluejay bitbake luneos-bootimg-gki` (same for
+  panther) builds kernel and boot images together → `tmp/deploy/images/<machine>/`.
+  The ACK android14-6.1 kernel is built in-tree by
+  `meta-android/recipes-kernel/linux-halium-gki/linux-halium-gki_6.1.bb` with
+  Google's prebuilt clang (r487747c), plain kbuild, no OE toolchain. Supporting
+  files: `meta-android/lib/halium/bootimg.py`,
+  `meta-android/classes/kernel_android.bbclass` (routes header ≥3 to it; stops
+  splitting an appended dtb for v3+), `meta-android/classes/gki_bootimg.bbclass`
+  (packs the kernel from `GKI_KERNEL_PROVIDER ?= "linux-halium-gki"`, or an
+  out-of-tree Image named by `GKI_KERNEL_IMAGE`, with the machine initramfs),
+  `meta-android/recipes-bsp/gki-bootimg/luneos-bootimg-gki_1.0.bb` (gated on
+  `GKI_BOOTIMG = "1"` in the machine conf), `meta-google/conf/machine/{bluejay,panther}.conf`
+  (`PREFERRED_VERSION_linux-halium-gki = "6.1%"`).
 - Yocto gotchas hit on the way: a layer needs `addpylib ${LAYERDIR}/lib halium`
   in `conf/layer.conf` for its `lib/` to be importable; an image-only recipe
   needs `inherit nopackages` (an empty `PACKAGES` still fails `do_package`);
@@ -444,8 +434,8 @@ debugging.md.
 
 ## Flash kits (reference shape)
 
-Pure-fastboot install, no `fastboot boot` + `adb push` dance
-(`/media/herrie/LuneOS/{bluejay,panther}-staging/`):
+Pure-fastboot install, no `fastboot boot` + `adb push` dance (the bluejay and
+panther staging kits):
 
 ```
 adb reboot bootloader

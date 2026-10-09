@@ -1,6 +1,8 @@
 # Device: sargo (Google Pixel 3a) — the GSI pilot
 
-The device the whole GSI/GKI architecture was proven on. **One generic rootfs (`MACHINE=halium-arm64`, no kernel, no GSI baked in) boots sargo on both the Halium 14.0 and 16.0 GSIs over its stock Android 12.1 vendor** — `systemctl is-system-running = running`, 0 failed units, full UI, 32 audio sinks, working nyx, sensorfwd, bluebinder, bluetooth and ofono. The same build serves both GSIs. Full history: `gsigki/luneos-gsi-gki-migration-plan.md` (§0, §2, §11).
+Google Pixel 3a (`sargo`), Qualcomm SDM670, Tier B on its stock Android 12.1 vendor: the GSI pilot, running LuneOS on the Halium 14.0 and 16.0 GSIs.
+
+The device the whole GSI/GKI architecture was proven on. **One generic rootfs (`MACHINE=halium-arm64`, no kernel, no GSI baked in) boots sargo on both the Halium 14.0 and 16.0 GSIs over its stock Android 12.1 vendor** — `systemctl is-system-running = running`, 0 failed units, full UI, 32 audio sinks, working nyx, sensorfwd, bluebinder, bluetooth and ofono. The same build serves both GSIs.
 
 ## Platform facts
 
@@ -39,7 +41,7 @@ The last one is the one to remember: 0 failed units, working audio, no display �
 
 ## The wrynose baseline (what makes sargo a usable control)
 
-All GSI work targets `Herrie82/meta-smartphone` → `herrie/wrynose`; build tree `/media/herrie/LuneOS/wrynose/webos-ports`, `MACHINE=sargo . ./setup-env`. sargo builds and boots on wrynose as of 2026-08-16. Key commits:
+All GSI work targets `Herrie82/meta-smartphone` → `herrie/wrynose`; `MACHINE=sargo . ./setup-env` in `$BUILD_DIR`. sargo builds and boots on wrynose as of 2026-08-16. Key commits:
 
 | Commit | Why it matters |
 |---|---|
@@ -60,7 +62,7 @@ All GSI work targets `Herrie82/meta-smartphone` → `herrie/wrynose`; build tree
 - Shipped-placeholder rule was learned here: `luna-platform.conf` shipped `DPI=445` and the generator read it back as a fallback — a plausible constant silently wrong on every device without an adaptation. Placeholders must be obviously invalid.
 - The PMIC RTC **cannot be written** - SPMI refuses it even with the device tree flipped - so the clock starts at 1970 every boot and RTC alarms are armed ~56 years out. See the RTC section below.
 - 4.9 kernel has **no `CONFIG_OVERLAY_FS`** → adaptation overlays must fall back to bind-mounts on sargo.
-- Atlas browser UI scaling: no LuneOS-side config fixes it — both fixes (CSS zoom, collapsing toolbar) belong in Atlas itself (`gsigki/atlas-scaling-findings.md`).
+- Atlas browser UI scaling: no LuneOS-side config fixes it — both fixes (CSS zoom, collapsing toolbar) belong in Atlas itself.
 
 ## The RTC cannot be written, and no kernel change fixes it (25 Sep 2026)
 
@@ -113,7 +115,7 @@ Consequences worth carrying to any Qualcomm port:
   on a fresh boot both read 1970 and a delta of zero looks like success. Require a
   sane system clock first and honour `hwclock`'s exit status.
 
-Test kit: `staging/sargo-nyx-system/` — `test-rtc-write.sh` (the above, with the
+Test kit (`sargo-nyx-system`) — `test-rtc-write.sh` (the above, with the
 three outcomes named), `test-system-alarm.sh` (13 passed / 0 failed / 4 skipped on
 25 Sep, the skips all being these device properties), and `install.sh` with adb or
 ssh transport and a `--revert`.

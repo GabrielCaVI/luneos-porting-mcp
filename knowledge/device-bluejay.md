@@ -1,6 +1,8 @@
 # Device: bluejay (Google Pixel 6a)
 
-First Tensor LuneOS port (nobody — Halium/UT/Droidian/SFOS — has shipped any Tensor port). GKI Tier A: our own ACK-built kernel + LuneOS initramfs in `boot`, everything vendor-side stock. Working reference for the "one kernel per KMI" model: the same kernel binary serves panther. Working notes: `gsigki/bluejay/bluejay-notes.md`; build repo `~/Documents/GitHub/luneos-bootimg-bluejay`.
+Google Pixel 6a (`bluejay`), Google Tensor gs101, GKI Tier A: kernel and initramfs boot on hardware; UI/graphics on Mali-G78 is the open frontier.
+
+First Tensor LuneOS port (nobody — Halium/UT/Droidian/SFOS — has shipped any Tensor port). Our own ACK-built kernel + LuneOS initramfs in `boot`, everything vendor-side stock. Working reference for the "one kernel per KMI" model: the same kernel binary serves panther. Kernel tooling (KMI checks, the original hand build): the `luneos-bootimg-bluejay` repository.
 
 ## Platform facts (verified from factory image `bluejay-bp4a.251205.006`, Android 16 QPR2)
 
@@ -22,32 +24,21 @@ Bootloader ARB was bumped by Android 13 and **again by the May 2025 update**. A 
 
 ## Kernel: source, fragment, KMI results
 
-- Source: `repo init -u https://android.googlesource.com/kernel/manifest -b android-gs-bluejay-6.1-android16` (10 GB; tree at `/media/herrie/LuneOS/bluejay-kernel`). Kleaf/Bazel, entry `build_bluejay.sh`; prebuilt GKI is the default — `--config=use_source_tree_aosp` builds `//aosp` from source (needed for any config change).
-- LuneOS fragment: `luneos/luneos_defconfig`, applied via `--//build/kernel/kleaf:defconfig_fragment=//luneos:luneos_defconfig`. Archived at `gsigki/bluejay/luneos_defconfig`.
+- Source: `repo init -u https://android.googlesource.com/kernel/manifest -b android-gs-bluejay-6.1-android16` (10 GB). Kleaf/Bazel, entry `build_bluejay.sh`; prebuilt GKI is the default — `--config=use_source_tree_aosp` builds `//aosp` from source (needed for any config change).
+- LuneOS fragment: `luneos/luneos_defconfig`, applied via `--//build/kernel/kleaf:defconfig_fragment=//luneos:luneos_defconfig`.
 - Stock config (via IKCONFIG → `stock-gki-config-6.1.145-bp4a.txt`): `mer_verify_kernel_config` reports 23 errors / 59 warnings — **gki_defconfig alone is NOT enough**, the delta is small and known (DEVTMPFS+MOUNT, FHANDLE, TMPFS ACL/XATTR, VT, netfilter/PPP/L2TP, etc.).
-- **KMI-poison list (final, from CRC bisect): `SYSVIPC` (+`IPC_NS`), `FANOTIFY`, `NET_L3_MASTER_DEV`.** These change core struct layouts under MODVERSIONS — with them on, all 203 stock modules fail (3145 symbol CRCs drift). Everything else in the fragment is KMI-clean (0 drift). Property of GKI, not gs101.
+- **KMI-poison list (from CRC bisect): `FANOTIFY`, `NET_L3_MASTER_DEV`.** These change core struct layouts under MODVERSIONS — with the poisoners on, all 203 stock modules fail (3145 symbol CRCs drift). Everything else in the fragment is KMI-clean (0 drift). The list is a property of this KMI-plus-tree (ACK android14-6.1), not of gs101 and not of GKI in general: q25's MediaTek mgk android12-5.10 tree gives a different one (device-q25.md). `CONFIG_SYSVIPC` is not needed and stays off.
 
-> **Sep 2026: the SYSVIPC requirement was dropped.** PmLogLib no longer calls
-> `shmget()`/`shmat()` (`nm -D libPmLogLib.so.3.3.0 | grep -c shmget` -> 0), so
-> `# CONFIG_SYSVIPC is not set` is now correct everywhere and `CONFIG_IPC_NS` goes
-> with it. Anything below that treats it as mandatory, or describes working around
-> its CRC damage, is history - see kmi-crc-matching.md.
->
-> **It does not follow that the KMI got better.** Measured on sunfish: drift was
-> 8158 of 12823 exported symbols with SYSVIPC on and 8158 of 12823 with it off,
-> because `FANOTIFY` and `CGROUP_DEVICE` poison the same symbols independently.
-> Poison sets overlap, so drift is a max and not a sum - removing one poisoner
-> while another stays shows up as no improvement at all.
-- Userland consequences of the poison list staying off: no SysV IPC (watch Qt QSharedMemory/QSystemSemaphore), no fanotify (systemd fine), no VRF (ofono fine), and **LXC must not unshare the IPC namespace** (PID_NS is available, IPC_NS is not).
+- Userland consequences of the poison list staying off: no fanotify (systemd fine), no VRF (ofono fine). `IPC_NS` is off too, so **LXC must not unshare the IPC namespace** (PID_NS is available).
 - ACK pin bumped to tag `android14-6.1-2026-06_r7` (6.1.172) for the vendor-hook tracepoints `vh_mm.ko`/`vh_sched.ko` need → **203/203 factory modules load, 0 CRC drift**. Caveat: `repo sync` reverts the pin — re-checkout the tag and re-apply the modules.bzl trim. Also `CONFIG_UEVENT_HELPER=y` added (mdev hotplug).
-- Kernel comes from the **kernel-only** build (`out-luneos-tierA/`), not the full dist — manifest-pinned google-modules don't compile against 6.1.172 headers (irrelevant for Tier A; if option B is ever needed, build at the manifest-matched 6.1.124 state).
+- Only the kernel is built, not the full Kleaf dist — manifest-pinned google-modules don't compile against 6.1.172 headers (irrelevant for Tier A; if option B is ever needed, build at the manifest-matched 6.1.124 state).
 - Verification tools (host-side, no device): `kmi-crc-check.py` (parses `__versions` from stock .kos vs our `Module.symvers`), `symvers-drift.py`, `tools/module-order.py`.
 
 ## Boot images & Yocto
 
-- Hand-built artifact: `gsigki/bluejay/boot-bluejay-luneos.img` (23.5 MB, header v4) + `-debug.img` (`enable_adb`). Ramdisk = sargo initramfs base + concatenated gzip overlay containing the patched `init` (module fixpoint→v4 loader, cmdline params, PARTNAME poll).
+- The first images were hand-built by `build-bootimg.sh` (`boot-bluejay-luneos.img`, 23.5 MB, header v4, + `-debug.img` with `enable_adb`); the patched `init` they carried (module fixpoint→v4 loader, cmdline params, PARTNAME poll) is now upstream in `initramfs-scripts-halium/init.sh`.
 - Since 4 Sep 2026 the images come out of bitbake: `MACHINE=bluejay bitbake initramfs-android-image` then `luneos-bootimg-gki` → `tmp/deploy/images/bluejay/`. Machinery: `meta-android/lib/halium/bootimg.py` (v3/v4 writer, byte-identical to AOSP mkbootimg for all four shipped shapes), `gki_bootimg.bbclass`, `meta-google/conf/machine/bluejay.conf`, `meta-luneos/…/nyx-modules/bluejay.cmake`. `ANDROID_BOOTIMG_INIT_BOOT = "0"` → single boot image.
-- **The GKI kernel deliberately stays outside bitbake**: `PREFERRED_PROVIDER_virtual/kernel = "linux-dummy"`, `GKI_KERNEL_IMAGE` in local.conf points at the `build-bootimg.sh` Image. Rebuilding ACK with OE's toolchain would move MODVERSIONS CRCs and break the stock vendor modules — the whole Tier A property.
+- **The GKI kernel is built in-tree** by `meta-android/recipes-kernel/linux-halium-gki/linux-halium-gki_6.1.bb` (ACK `android14-6.1-2026-06_r7`, plain kbuild, Google's prebuilt clang 17 r487747c — never the OE toolchain, which would move MODVERSIONS CRCs and break the stock vendor modules). `luneos-bootimg-gki` (meta-android/recipes-bsp/gki-bootimg/) consumes it via `GKI_KERNEL_PROVIDER ?= "linux-halium-gki"`; setting `GKI_KERNEL_IMAGE` overrides it with an out-of-tree Image. `bluejay.conf` sets `PREFERRED_VERSION_linux-halium-gki = "6.1%"`; `PREFERRED_PROVIDER_virtual/kernel = "linux-dummy"` only means the rootfs carries no kernel.
 
 ## libhybris-on-Tensor feasibility (verdict: feasible)
 
@@ -55,16 +46,16 @@ De-risked by direct vendor.img inspection: composer is **HIDL @2.4::IComposer** 
 
 ## Flash kit
 
-`/media/herrie/LuneOS/bluejay-staging/` — pure-fastboot install (athena/panther parity): `install.sh` flashes vbmeta (verification off) → boot → `userdata-luneos.img` (3,774,873,600 B ext4 with `rootfs.img` + `android-rootfs.img` = Halium 16 GSI side by side; grows on first boot) → reboot. `make-userdata.sh` rebuilds after a rootfs rebuild. Distributable: `luneos_bluejay_20260904.tar.gz`. Only difference from panther: one boot image instead of two (no init_boot).
+The device's staging kit — pure-fastboot install (athena/panther parity): `install.sh` flashes vbmeta (verification off) → boot → `userdata-luneos.img` (3,774,873,600 B ext4 with `rootfs.img` + `android-rootfs.img` = Halium 16 GSI side by side; grows on first boot) → reboot. `make-userdata.sh` rebuilds after a rootfs rebuild. Distributable: `luneos_bluejay_20260904.tar.gz`. Only difference from panther: one boot image instead of two (no init_boot).
 
 ## Update (12 Sep 2026): deploy set rebuilt, MODULE_SIG_PROTECT defect found and fixed
 
-- `/media/herrie/LuneOS/bluejay-staging/` regenerated: boot images (GKI 6.1.172 from ACK `android14-6.1-2026-06_r7`), halium-arm64 dev `rootfs.img` (ext4, wrynose 20260912), Halium 16 GSI `20260910-1` as `android-rootfs.img`, stock bp4a vbmeta, `install.sh`, README, SHA256SUMS.
+- Staging kit regenerated: boot images (GKI 6.1.172 from ACK `android14-6.1-2026-06_r7`), halium-arm64 dev `rootfs.img` (ext4, wrynose 20260912), Halium 16 GSI `20260910-1` as `android-rootfs.img`, stock bp4a vbmeta, `install.sh`, README, SHA256SUMS.
 - **The earlier kit had a real defect: `CONFIG_MODULE_SIG_PROTECT` was on.** A GKI kernel refuses (`-EACCES`) to let a module it did not sign resolve protected symbols; since we rebuild GKI, our key is not Google's, so the phone's own stock vendor modules count as unsigned → **Wi-Fi/BT modules never loaded — invisibly to a CRC-only check**. Fixed with one config line (`# CONFIG_MODULE_SIG_PROTECT is not set`, `MODULE_SIG`/`MODULE_SIG_ALL` stay `=y`; `internal.h` stubs both helpers when off — no source patch needed, unlike achunt2143's bootimg PR that surfaced it). **Verified, not assumed**: 203/203 factory modules load, 0 CRC mismatches, option confirmed off via IKCONFIG readback, poison list still off, UEVENT_HELPER + DEVTMPFS on. See kernel-porting.md Step 4b.
 - `CONFIG_BT_HCIVHCI=m` added to the fragment (+ `hci_vhci` in the Kleaf GKI module lists in `build-bootimg.sh`) for bluebinder's `/dev/vhci`.
 - `build-bootimg.sh` was broken until this rebuild: the module-loader overlay patch is now upstream in `initramfs-scripts-halium/init.sh`, so `patch` hit "previously applied" and died under `set -e`. Now applied via `apply_if_needed()`, which treats already-applied as success.
-- meta-webos-ports cherry-picks applied (uncommitted): 3 PulseAudio null-guard patches + SRC_URI lines, and the `AUDIO_FORMAT_PCM_FLOAT` rewrite in droid-audio-config-gen — verified present in the packaged output of both halium_arm64 and bluejay builds. Everything else from PR817 dropped; see `pr-audit-2026-09-12.md`.
-- Machine confs now say which KMI they want out loud — `bluejay.conf`/`panther.conf` declare `GKI_BOOTIMG = "1"` + `PREFERRED_VERSION_linux-halium-gki = "6.1%"` — because a second KMI (android12-5.10, for q25) now exists in the tree.
+- meta-webos-ports cherry-picks applied (uncommitted): 3 PulseAudio null-guard patches + SRC_URI lines, and the `AUDIO_FORMAT_PCM_FLOAT` rewrite in droid-audio-config-gen — verified present in the packaged output of both halium_arm64 and bluejay builds. Everything else from PR817 dropped.
+- Machine confs now say which KMI they want out loud — `bluejay.conf`/`panther.conf` declare `GKI_BOOTIMG = "1"` + `PREFERRED_VERSION_linux-halium-gki = "6.1%"` — so the KMI is explicit (q25 builds its own kernel, `linux-zinwa-q25`).
 
 ## Status
 

@@ -1,20 +1,20 @@
 # Device: surya (Xiaomi POCO X3 NFC, SM7150) — Tier B, built entirely without the hardware
 
+Xiaomi POCO X3 NFC (`surya`), Qualcomm SM7150-AC / Snapdragon 732G, Tier B on an /e/OS A15 vendor: boot image builds and is verified host-side; never run on hardware.
+
 The port that was done host-side from a downloaded ROM: no POCO X3 was ever
 attached. Everything below was read out of shipping images — the /e/OS build the
 device runs and the MIUI fastboot ROM under it — rather than out of a
 BoardConfig. `MACHINE=surya bitbake linux-xiaomi-surya` produces a complete
 header-v2 boot image; nothing has been observed on hardware, and the open
-questions at the end say which claims that leaves soft.
-
-Layer: `meta-smartphone/meta-xiaomi`. Working notes:
-`~/webos/LuneOS/pocox3nfc/surya-notes.md`.
+questions at the end say which claims that leaves soft. Layer:
+`meta-smartphone/meta-xiaomi`.
 
 ## Platform facts
 
 | Fact | Value | How it was established |
 |---|---|---|
-| SoC | Qualcomm **SM7150 / SDMMAGPIE** (Snapdragon 732G) | boot dtb root node — `qcom,sdmmagpie`, `qcom,msm-id <0x16d 0x0>` |
+| SoC | Qualcomm **SM7150-AC / SDMMAGPIE** (Snapdragon 732G) | boot dtb root node — `qcom,sdmmagpie`, `qcom,msm-id <0x16d 0x0>` |
 | Launch Android | 10 → a real `super`, **not** retrofit dynamic partitions | BoardConfig `BOARD_SUPER_PARTITION_SIZE := 8589934592` |
 | Slots | **A-only**, real `recovery` partition | BoardConfig; no slot suffix anywhere in the /e/OS zip |
 | Vendor as shipped | **/e/OS 4.2 A15** community (`e-4.2-a15-20260816663279`), lineage-22.2 base → API 35 → Halium 16 GSI | e.foundation build listing |
@@ -59,8 +59,11 @@ apply those overlays to it. It differs in size from stock (361,695 vs 345,849)
 purely by dtc version.
 
 `boot` is 128 MB and the finished image is 21.8 MB — no size pressure at all.
-For the kernel/ramdisk window, surya is the documented counterexample: see
-boot-images.md.
+For the kernel/ramdisk window, surya is the documented counterexample: the
+shipping **stock /e/OS** kernel runs about 1 MiB past the 16 MiB window and that
+image boots on real phones (boot-images.md § The window does not bind on every
+bootloader — surya proves it). That is an observation about the stock image, not
+about ours — no LuneOS image has run on a surya.
 
 ## Building msm-4.14 with the OE toolchain (GCC 15)
 
@@ -102,9 +105,7 @@ Two traps when reproducing the kernel build standalone (bitbake handles both):
 
 The remaining error is `CONFIG_DUMMY=y`, kept at the stock Android value.
 
-`CONFIG_SYSVIPC` is **off** — see kernel-porting.md; the PmLog dependency that
-made it mandatory was removed upstream, checked against this tree's own rootfs
-rather than assumed. `IKHEADERS` and `KALLSYMS_ALL` are off as size levers,
+`CONFIG_SYSVIPC` is off; LuneOS does not need it. `IKHEADERS` and `KALLSYMS_ALL` are off as size levers,
 worth 3.6 MB together. `NETCONSOLE`+`NETCONSOLE_DYNAMIC` are on and the cmdline
 carries `printk.devkmsg=on`: this device has **no accessible debug UART**, so
 netconsole over the USB gadget plus the initramfs adb shell are the only
@@ -147,13 +148,14 @@ identity, initramfs contents, config) are verified; these are not:
 - **The dtb size difference** from stock is attributed to dtc versions. If the
   device does not boot, this is the first thing to swap: ship the stock blob via
   `ANDROID_BOOTIMG_DTB`.
-- **SM7150 under libhybris on a Halium 16 GSI** has no precedent in this project;
-  the closest is sargo (SDM670, A12 vendor) and sunfish (SDM730).
+- **SM7150 under libhybris on a Halium 16 GSI**: the closest precedent is
+  sunfish (SM7150-AB, Snapdragon 730G, LineageOS 23.2 vendor), which reaches the
+  LuneOS UI; sargo (SDM670, A12 vendor) is the next nearest.
 
 ## Its A15 vendor reports a dated API level, which mis-selected the binder protocol
 
 Found while porting fajita (OnePlus 6T) and confirmed against this device's own
-`vendor.img` in `surya-staging`:
+`vendor.img` (the one in its install kit):
 
 ```
 ro.board.api_level=202404      <- Android 15 vendor API level, a YYYYMM date

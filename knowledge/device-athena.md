@@ -1,6 +1,8 @@
 # Device: athena (BlackBerry KEY2, SDM660) — Tier B, and the boot-image window
 
-The first SDM660 / BlackBerry target, and the port that produced the **boot-image window rule** in boot-images.md. A 4.19 kernel forked to `shr-distribution/linux` branch `key2/4.19` builds clean under Yocto with GCC 15; the Android-15 vendor from a third-party ROM serves a Halium 16 GSI with **zero VNDK work**. The kernel reaches userspace on hardware (dmesg, unpacked initramfs, debug shell). An early splash hang was wrongly attributed to the kernel overrunning the ramdisk load address — that overrun was real and is fixed, but was never shown to be a cause. See the splash caveat below.
+BlackBerry KEY2 (`athena`, BBF100-8), Qualcomm SDM660, Tier B on a 4.19 kernel and a LineageOS 22 (A15) vendor; boots LuneOS to the lock screen.
+
+The first SDM660 / BlackBerry target, and the port that produced the **boot-image window rule** in boot-images.md. A 4.19 kernel forked to `shr-distribution/linux` branch `key2/4.19` builds clean under Yocto with GCC 15; an Android-15 vendor serves a Halium 16 GSI with **zero VNDK work**, provided its kernel generation matches ours. An early splash hang coincided with the kernel overrunning the ramdisk load address — the overrun was real and is fixed, but was never shown to cause the hang: on this device the splash never clears, even on a working boot.
 
 ## Platform facts
 
@@ -22,7 +24,7 @@ The first SDM660 / BlackBerry target, and the port that produced the **boot-imag
 
 `tim-ecoder/android_kernel_blackberry_sdm660-4p19`, branch `lineage23.2-athena` — 4.19.325 with a real in-kernel Athena device tree (`sdm660-bbry-athena.dtsi`, camera dtsi, the BBRY input drivers). It is what the LineageOS 23.2 device tree selects (`TARGET_KERNEL_VERSION := 4.19`).
 
-**But every shipping ROM for this device runs 4.4** (`4.4.302-Key2`, clang 19). No released build inspected boots 4.19 — it is the less-travelled path, and `android_kernel_blackberry_sdm660` (4.4) is the proven fallback. 4.4 is no obstacle for Halium (tissot and mido are 4.9).
+Released ROMs run both generations: /e/OS for athena is a **4.4** build (`4.4.302-Key2`, clang 19), while LineageOS 22 ships and boots **4.19.325**. `android_kernel_blackberry_sdm660` (4.4) is the fallback; 4.4 is no obstacle for Halium (tissot and mido are 4.9).
 
 Forked as `shr-distribution/linux` `key2/4.19`. The tree had never been built with anything but clang, so GCC 15 + GNU Make 4.4 both needed work — see kernel-porting.md for the generic traps. **Seven of the findings were real bugs in code LineageOS ships today**, fixed at source rather than silenced:
 
@@ -36,7 +38,13 @@ Forked as `shr-distribution/linux` `key2/4.19`. The tree had never been built wi
 | `crypto ice` | format string split across two lines with no continuation |
 | `kgsl` | `dev_err()` passed an argument the format string never consumed |
 
-Only `wlan.ko` (qcacld-3.0) is built as a module, and it is the one that matters: **the ROMs ship no wlan module in `/vendor`**, so the driver must come from our build — which sidesteps the force-load/vermagic misery mindphone hit.
+Only `wlan.ko` (qcacld-3.0) is built as a module, and it is the one that matters. LineageOS 22 v1.21a does ship `/vendor/lib/modules/wlan.ko`, but it will not load: even with vermagic patched from `...-perf-g888495ee4a66` to ours, `insmod` gives
+
+```
+wlan: disagrees about version of symbol module_layout
+```
+
+`module_layout`'s CRC encodes `struct module` itself, so the configs genuinely differ. `CONFIG_MODULE_FORCE_LOAD` is not set and forcing it risks memory corruption. So the driver comes from our in-tree qcacld-3.0 build — which sidesteps the force-load/vermagic misery mindphone hit.
 
 ## Vendor and GSI — the Android-15 shortcut
 
@@ -44,11 +52,36 @@ Stock athena vendor is Android 8.1 / VNDK 27 and cannot serve an Android 16 GSI.
 
 > **Android 15 removed VNDK.** An A15 vendor image has no `ro.vndk.version` and no VNDK payload at all — just `ro.board.api_level=202404` and `ro.vendor.build.version.sdk=35`. So it needs **no VNDK snapshot ported into the GSI**, which is otherwise the expensive part (mindphone needed a v30 port).
 
-Checked on `e-4.1.1-a15-20260725-UNOFFICIAL-athena.zip`: `/vendor/etc/vintf/manifest.xml` is **53 HALs, every one `format="hidl"`**, `target-level="5"`. A pure-HIDL vendor is exactly what libhybris wants. So the shape is sargo's, with **no vendor rebuild** — flash the A15 `vendor.img` as-is, leave `system` alone, loop-mount the GSI from userdata.
+**Use the LineageOS 22 (v1.21a) vendor — the vendor must match the KERNEL version, not just the Android version.** This is the fix that got graphics working. The /e/OS 4.1.1 A15 vendor (`e-4.1.1-a15-20260725-UNOFFICIAL-athena.zip`) and the LineageOS 22 vendor are both Android 15 (`ro.vendor.build.version.sdk=35`), so the zero-VNDK reasoning holds for both. But /e/OS athena is a **4.4-kernel** build and its Adreno blobs are 2018-era. Against our 4.19 kernel they abort:
 
-`target-level="5"` is FCM level 5 (Android 11) against an Android 16 framework matrix. That fails strict VINTF/VTS; Halium does not enforce them.
+```
+E Adreno-GSL: ioctl_kgsl_device_getinfo_ext: Error -2 getting the IB_TIMEOUT property
+W libEGL  : eglInitialize(...) failed (EGL_BAD_ALLOC)
+   -> EGL Version -1.-1, EGL Error 3001 (EGL_NOT_INITIALIZED), grey screen
+```
 
-## Boot image — and the window that broke it
+`KGSL_PROP_IB_TIMEOUT` is a 4.4-era ioctl. Both the LuneOS and LineageOS 4.19
+kernels have byte-identical kgsl and neither serves it. LineageOS 22 v1.21a is
+itself a 4.19 build and its `libgsl.so` (1,712,464 B vs /e/OS's 1,456,624 B)
+contains the string `KGSL_PROP_IB_TIMEOUT not available at build time` - it
+tolerates the absence. With the LineageOS 22 vendor:
+
+```
+EGL Version 1.5 / Available configurations: 68
+```
+
+**Rule: pick the vendor whose kernel version matches the kernel you boot.**
+Android version parity is necessary, not sufficient.
+
+Extracting it: the OTA ships `vendor.new.dat.br` (Brotli sparse dat) - Brotli
+decompress, then apply `vendor.transfer.list`'s "new" commands into a flat image
+(block size 4096, ranges are pairs `[a,b)`). Result 671,100,928 B,
+md5 `da7ef852edc65bec207b6b2c71b30efb`. Flash it as-is, leave `system` alone,
+loop-mount the GSI from userdata — sargo's shape, with **no vendor rebuild**.
+
+The /e/OS vendor's `/vendor/etc/vintf/manifest.xml` was **53 HALs, every one `format="hidl"`**, `target-level="5"`; the LineageOS 22 vendor publishes several HALs on AIDL instead (see the status board). `target-level="5"` is FCM level 5 (Android 11) against an Android 16 framework matrix. That fails strict VINTF/VTS; Halium does not enforce them.
+
+## Boot image and the kernel/ramdisk window
 
 Header **v0**, page size **4096**, verified field-for-field against the shipping /e/OS image (not read out of the BoardConfig):
 
@@ -91,7 +124,7 @@ Size levers that mattered, in order:
 **Result, measured (19 Sep 2026):** `Image.gz-dtb` **24,903,202 → 13,146,188 B**, one
 appended dtb instead of 27, ramdisk kept at the proven `0x01000000`. It now clears the
 window by **3.60 MB — more margin than the stock 4.4 image has (2.99 MB)**, despite
-being a 4.19 kernel. Untested on hardware.
+being a 4.19 kernel. This is the image that produced the 1406-line dmesg.
 
 The check itself is `kit/check-bootimg.sh` and it is worth running on every image:
 it caught a dropped `ANDROID_BOOTIMG_RAMDISK_RAM_BASE` (silently defaulting the
@@ -117,10 +150,8 @@ the panel. It was built that way and it does not happen:
 `Console: switching to colour frame buffer device` appears **nowhere in 1406 lines** of
 dmesg. `CONFIG_FRAMEBUFFER_CONSOLE=y` and `console=tty0` are both set.
 
-This is the same failure this file previously attributed to the /e/OS and UBports builds
-("carries console=tty0 with no fbcon behind it"). That framing was wrong: they carry
-`console=tty0` *and* it does not work for them either, and **enabling fbcon is not what
-was missing**.
+The /e/OS and UBports builds carry `console=tty0` too, and it does not work for them
+either: **enabling fbcon is not what is missing**.
 
 Root cause not established. What has been ruled out, from the source at `key2/4.19`:
 
@@ -162,7 +193,7 @@ checks, all cheap:
 | `BoardConfigCommon.mk` AVB/VERITY/VBMETA vars | none, on `lineage-22.2` or `lineage-23.2` |
 
 Plus the empirical one: an unsigned LuneOS boot image was *accepted and executed*
-by aboot — the splash hang was a corrupted kernel, not a rejected image.
+by aboot (it ran and produced dmesg).
 
 Generalises: before assuming a device needs a verification-disabled vbmeta, check
 whether the community ROM that already boots on it ships or writes one. If it does
@@ -173,61 +204,12 @@ not, and its boot image carries no AVB footer, there is nothing to disable.
 - **The `merge_config.sh` comment trap.** A comment reading `# CONFIG_DUMMY=y  kept at the stock value` is parsed as a *directive* and silently unsets the symbol — `merge_config.sh` matches `^(# )?CONFIG_[A-Za-z0-9_][= ]`. Never start a comment line in a fragment with `# CONFIG_`. Cost an hour here.
 - **Flash-kit directories on `/media` get cleaned.** The staging dir was wiped twice by disk cleanups. Keep the *scripts* on the root disk and treat the images as regenerable — the kernel recipe's `_deploy` sstate entry still holds the finished `.fastboot` boot image, so a wiped `tmp/deploy` costs an untar, not a rebuild.
 - **`fastboot boot` is not the same test as `fastboot flash boot`** — RAM-booting uses fastboot's own load addresses, so it will not reproduce a load-address bug.
-- **Bisect the boot image before adding logging.** A boot image built from a *known-good* kernel plus *our* initramfs (with `enable_adb`) separates kernel from initramfs in a single flash. On this device `enable_adb` makes the Halium initrd `panic` straight to its debug gadget before it looks for userdata, so a missing `rootfs.img` does not affect the test.
+- **Bisect the boot image before adding logging.** A boot image built from a *known-good* kernel plus *our* initramfs (with `enable_adb`) separates kernel from initramfs in a single flash. On this device `enable_adb` makes the Halium initrd `panic` straight to its debug gadget before it looks for userdata, so a missing `rootfs.img` does not affect the test. **It is not single-variable:** the donor boot image brings its own command line. On athena the donor's lacked `selinux=0`, which was the actual bug, so the swap "exonerated the kernel" by changing the cmdline. Diff the two `Kernel command line:` lines before concluding anything; only a swap that *fails* is conclusive on its own.
 
-## Corrections and findings from the boot (20 Sep 2026)
+## Findings from the boot (20 Sep 2026)
 
 LuneOS boots to the lock screen on a BBF100-8: display, touch, power and volume
-work. What follows corrects several claims above.
-
-### The vendor must match the KERNEL version, not just the Android version
-
-**This is the fix that got graphics working, and it invalidates the vendor
-choice recorded above.**
-
-The /e/OS 4.1.1 A15 vendor and the LineageOS 22 vendor are both Android 15
-(`ro.vendor.build.version.sdk=35`), so the "A15 removed VNDK, zero VNDK work"
-reasoning holds for both. But /e/OS athena is a **4.4-kernel** build and its
-Adreno blobs are 2018-era. Against our 4.19 kernel they abort:
-
-```
-E Adreno-GSL: ioctl_kgsl_device_getinfo_ext: Error -2 getting the IB_TIMEOUT property
-W libEGL  : eglInitialize(...) failed (EGL_BAD_ALLOC)
-   -> EGL Version -1.-1, EGL Error 3001 (EGL_NOT_INITIALIZED), grey screen
-```
-
-`KGSL_PROP_IB_TIMEOUT` is a 4.4-era ioctl. Both the LuneOS and LineageOS 4.19
-kernels have byte-identical kgsl and neither serves it. LineageOS 22 v1.21a is
-itself a 4.19 build and its `libgsl.so` (1,712,464 B vs /e/OS's 1,456,624 B)
-contains the string `KGSL_PROP_IB_TIMEOUT not available at build time` - it
-tolerates the absence. After swapping to the LineageOS 22 vendor:
-
-```
-EGL Version 1.5 / Available configurations: 68
-```
-
-**Rule: pick the vendor whose kernel version matches the kernel you boot.**
-Android version parity is necessary, not sufficient.
-
-Extracting it: the OTA ships `vendor.new.dat.br` (Brotli sparse dat) - Brotli
-decompress, then apply `vendor.transfer.list`'s "new" commands into a flat image
-(block size 4096, ranges are pairs `[a,b)`). Result 671,100,928 B,
-md5 `da7ef852edc65bec207b6b2c71b30efb`.
-
-### The ROMs DO ship a wlan module - it just cannot be used
-
-Corrects the "no wlan module in /vendor" claim above. LineageOS 22 v1.21a ships
-`/vendor/lib/modules/wlan.ko`. It still will not load: even with vermagic
-patched from `...-perf-g888495ee4a66` to ours, `insmod` gives
-
-```
-wlan: disagrees about version of symbol module_layout
-```
-
-`module_layout`'s CRC encodes `struct module` itself, so the configs genuinely
-differ. `CONFIG_MODULE_FORCE_LOAD` is not set and forcing it risks memory
-corruption. Build `wlan.ko` from the in-tree qcacld-3.0 - the conclusion stands,
-the premise was wrong.
+work.
 
 ### athena has no pstore, which is why this took so long
 
@@ -236,11 +218,6 @@ With no UART on a retail unit and no working fbcon, **a failure before userspace
 is completely mute**. Adding a ramoops node plus `PSTORE_RAM` would have turned
 much of this investigation into one log read. Do this early on any device with
 no debug UART.
-
-### Settled: a released ROM does boot 4.19
-
-LineageOS 22 ships 4.19.325 for athena and boots it. The caveat recorded above -
-that only the 4.4 tree was proven - is resolved.
 
 ### Input map
 
@@ -257,16 +234,6 @@ Seven nodes, and the touchscreen is not the obvious one:
 | event6 | `gpio-keys` | volume |
 
 Pinned by name in the `athena` luneos-device-config adaptation.
-
-### Do not enable lxc@android
-
-LuneOS starts the container from `android-system.service`
-(`ExecStart=/usr/bin/lxc-start -n android ... /init`), which is enabled via
-`basic.target.requires`. `lxc@android.service` is a *different*, unused unit.
-Enabling it gives two units managing one container, and `lxc-start` exiting
-"Container is already running" makes systemd run that unit's `ExecStop`, which
-tears down the healthy container. If the container is not starting, debug
-`android-system.service`; do not enable `lxc@android`.
 
 ### Editing files on the running device
 
@@ -286,8 +253,11 @@ tears down the healthy container. If the container is not starting, debug
 | Android container | Bluetooth | rfkill soft-block + BlueZ on the wrong `hci` |
 | | camera | `announcing 0 droid camera(s)`; unresolved |
 
-Fingerprint, NFC and sensors are **one** root cause - see the A15 AIDL section
-in hal-userspace.md. Fix that once, not three times.
+Whether fingerprint, NFC and sensors share one root cause is **unverified**: that
+boot ran libgbinder on the API 31 preset against this A15 vendor (hal-userspace.md,
+the A15 AIDL section). Resolve `ApiLevel` correctly (device-fajita.md § Android 15
+vendors report a *dated* API level) and retest each before fixing them separately.
+What stands regardless: HIDL-only `biomd` cannot use an AIDL-only fingerprint HAL.
 
 ### Kernel fixes that got it booting, in order
 
@@ -323,9 +293,8 @@ pinctrl at `sdm660-bbry-athena.dtsi:887`.
 ### WiFi
 
 `wlan.ko` comes from in-tree qcacld-3.0 and must be injected into `rootfs.img` -
-see the generic-rootfs module section in kernel-porting.md. LineageOS 22 *does*
-ship `/vendor/lib/modules/wlan.ko`, but it will not load
-(`module_layout` CRC mismatch), so ours is the only one.
+see the generic-rootfs module section in kernel-porting.md. LineageOS 22's own
+`wlan.ko` will not load (see The kernel), so ours is the only one.
 
 Also `connmand: Unknown option WpaSupplicantConfigFile` - a dead key in LuneOS's
 own `main.conf`; see deviceinfo-reference.md.

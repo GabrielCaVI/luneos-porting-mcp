@@ -1,5 +1,7 @@
 # Device: a3-2015-halium (Samsung Galaxy A3 2015, SM-A300FU) — MSM8916 on the 16.0 GSI through lk2nd
 
+Samsung Galaxy A3 (2015) SM-A300FU (`a3-2015-halium`), 32-bit Qualcomm MSM8916, Tier B on the halium_arm 16.0 GSI via lk2nd: UI, modem, Wi-Fi, BT, audio and camera work.
+
 A 32-bit Qualcomm MSM8916 phone from 2015 running the LineageOS 18.1 vendor (VNDK 30) of vlw's a3lte
 trees under the generic `halium_arm` 16.0 GSI, booted through lk2nd. Kept next to the mainline machine
 `a3-2015`. Working on 8 Oct 2026: UI, modem (rmt_storage, qmuxd, rild), Wi-Fi with the real MAC,

@@ -1,11 +1,11 @@
 # Porting & Debug Tools Reference
 
-The small, self-contained tools built during the LuneOS GSI/GKI work, with usage
-and location. Most are pure-stdlib Python or shell so they run on any host with no
-device attached — the porting method leans hard on host-side verification (KMI
-checks, module-order analysis, boot-image diffing) *before* anything is flashed.
-Primary locations: the `gsigki/` working directory (layout at the end) and the
-`luneos-bootimg-bluejay` build repo (`~/Documents/GitHub/luneos-bootimg-bluejay`),
+The small, self-contained porting and debug tools built during the LuneOS GSI/GKI work, with usage and location.
+
+Most are pure-stdlib Python or shell so they run on any host with no device
+attached — the porting method leans hard on host-side verification (KMI checks,
+module-order analysis, boot-image diffing) *before* anything is flashed. They live
+in the maintainer's working tree and in the `luneos-bootimg-bluejay` build repo,
 which republishes the KMI/module tools so end users can verify against their own
 factory images.
 
@@ -42,9 +42,10 @@ in the build repo.
 ## symvers-drift.py
 
 **Purpose:** quantify exported-symbol CRC drift between two symvers files —
-the bisect instrument for finding which config options poison the KMI. The
-bluejay bisect went from 3145 drifted symbols (full fragment) to **0** by
-removing only SYSVIPC(+IPC_NS), FANOTIFY and NET_L3_MASTER_DEV.
+the bisect instrument for finding which config options poison the KMI. On
+bluejay (android14-6.1) it took the fragment from 3145 drifted symbols to **0**;
+the poisoners there are FANOTIFY and NET_L3_MASTER_DEV. The list is per KMI and
+tree; see kernel-porting.md Step 3.
 
 **Location:** `gsigki/bluejay/symvers-drift.py`; also in the build repo's
 `tools/`.
@@ -300,9 +301,10 @@ A13-launch machines (`ANDROID_BOOTIMG_INIT_BOOT = "1"`). The initramfs from
 bitbake is the canonical one — it carries the module-loader/cmdline-params and
 userdata-resize fixes via `initramfs-scripts-halium`, and has been *newer* than
 hand-maintained overlay ramdisks in practice (it picked up the find-the-Android-
-image fix the hand kits lacked). The GKI kernel itself stays outside bitbake:
-`GKI_KERNEL_IMAGE` in local.conf points at the `build-bootimg.sh` output
-(rebuilding ACK under the OE toolchain would shift the KMI CRCs).
+image fix the hand kits lacked). The GKI kernel is built in bitbake too, by
+`linux-halium-gki` (6.1) with Google's prebuilt clang r487747c rather than the OE
+toolchain, and `luneos-bootimg-gki` pulls it in; set `GKI_KERNEL_IMAGE` only to
+use an out-of-tree Image such as the `build-bootimg.sh` output.
 
 ## build-bootimg.sh (luneos-bootimg-bluejay repo)
 

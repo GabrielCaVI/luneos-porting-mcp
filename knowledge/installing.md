@@ -1,5 +1,7 @@
 # Installing LuneOS on Ported Devices (Flash Kits)
 
+How LuneOS is installed: flash kits that write vbmeta, a boot image (plus init_boot on A13-launch devices) and a userdata image, leaving stock partitions alone.
+
 LuneOS installs without touching the device's `system`, `vendor`, `vendor_boot`, `dtbo` or `super` partitions: you flash a verification-disabled `vbmeta`, a LuneOS boot image (and on A13-launch devices an `init_boot` image), and a `userdata` image containing the LuneOS rootfs and the Halium GSI as plain files. Stock Android's vendor stays in place and provides the HALs; the install is reversible. This document records the general model, the "athena-shape" pure-fastboot kit layout, the per-device flash sequences for bluejay (Pixel 6a), panther (Pixel 7) and mindphone (MT6739), debug-image workflow, and the anti-rollback constraints that can brick a device if ignored.
 
 ## The general model
@@ -17,7 +19,7 @@ adb reboot bootloader        # or the device's key combo
 
 ## The athena-shape kit (current standard)
 
-All three staged kits (`/media/herrie/LuneOS/athena-staging/`, `bluejay-staging/`, `panther-staging/`) now share the same pure-fastboot shape — no `fastboot boot` + `adb push` dance. Kit contents (panther example):
+The athena, bluejay and panther staging kits share the same pure-fastboot shape — no `fastboot boot` + `adb push` dance. Kit contents (panther example):
 
 | File | |
 |---|---|
@@ -47,7 +49,7 @@ The small image **grows to the real partition size on first boot** via `resize_u
 
 ### bluejay (Pixel 6a — A12-launch layout, one boot image)
 
-Kit: `/media/herrie/LuneOS/bluejay-staging/`. No `init_boot` on an A12-launch device, so `install.sh` flashes one boot image where panther flashes two; everything else in the two kits is the same file, hardlinked. Userdata partition is ~110 GB; the 3.77 GB image grows on first boot.
+No `init_boot` on an A12-launch device, so `install.sh` flashes one boot image where panther flashes two; everything else in the two kits is the same file, hardlinked. Userdata partition is ~110 GB; the 3.77 GB image grows on first boot.
 
 ```
 adb reboot bootloader
@@ -58,11 +60,11 @@ adb reboot bootloader
 
 ### panther (Pixel 7 — A13-launch layout, boot + init_boot)
 
-Kit: `/media/herrie/LuneOS/panther-staging/`. Two images instead of one: `boot` gets our GKI kernel (no ramdisk), `init_boot` gets our LuneOS initramfs (kernel=0). `vendor_boot`, `vendor_kernel_boot`, `dtbo`, `super` stay stock. `install.sh` flashes vbmeta → boot → init_boot → userdata → reboot. Image sizes: `boot-panther-luneos.img` 16,912,384 B (64 MB partition), `init_boot-panther-luneos.img` ~6.65 MB (8 MB partition — watch the headroom; lz4 instead of gzip is the escape hatch if the ramdisk grows).
+Two images instead of one: `boot` gets our GKI kernel (no ramdisk), `init_boot` gets our LuneOS initramfs (kernel=0). `vendor_boot`, `vendor_kernel_boot`, `dtbo`, `super` stay stock. `install.sh` flashes vbmeta → boot → init_boot → userdata → reboot. Image sizes: `boot-panther-luneos.img` 16,912,384 B (64 MB partition), `init_boot-panther-luneos.img` ~6.65 MB (8 MB partition — watch the headroom; lz4 instead of gzip is the escape hatch if the ramdisk grows).
 
 ### mindphone (MT6739 — header v2, A/B, no custom recovery)
 
-Everything goes through fastboot; there is no custom recovery for this device. Artifacts in `gsigki/mindphone/images/`: `boot-luneos-mindphone.img` (= the deploy's `zImage-mindphone.fastboot`, kernel + LuneOS initramfs), `vbmeta-disabled.img`, `userdata-luneos.img` (3.0 GB rootfs).
+Everything goes through fastboot; there is no custom recovery for this device. Kit contents: `boot-luneos-mindphone.img` (= the deploy's `zImage-mindphone.fastboot`, kernel + LuneOS initramfs), `vbmeta-disabled.img`, `userdata-luneos.img` (3.0 GB rootfs).
 
 ```
 adb reboot bootloader            # or Vol-Down + Power
@@ -80,12 +82,11 @@ AVB details: stock `vbmeta.img` is SHA256_RSA2048-signed with flags=0 (verificat
 avbtool make_vbmeta_image --flags 2 --padding_size 4096 --output vbmeta-disabled.img
 ```
 
-(or `fastboot --disable-verity --disable-verification flash vbmeta vbmeta.img`). MTK lk in unlocked/orange state then boots the unsigned image. Optionally append an unsigned hash footer with avbtool so footer-expecting tooling stays happy — not required once verification is off. Flash **both** boot slots to keep A/B consistent.
+That sets flags 2 (VERIFICATION_DISABLED only) and is what the mindphone kit ships. `fastboot --disable-verity --disable-verification flash vbmeta vbmeta.img` is not equivalent: it sets flags 3 (HASHTREE_DISABLED | VERIFICATION_DISABLED), as the radon and surya images do; prefer flags 3 for new kits. MTK lk in unlocked/orange state then boots the unsigned image. Optionally append an unsigned hash footer with avbtool so footer-expecting tooling stays happy — not required once verification is off. Flash **both** boot slots to keep A/B consistent.
 
 ### radon (FuriPhone FLX1s, MT6877) — SP Flash Tool / mtkclient, NOT fastboot
 
-Kit: `~/webos/LuneOS/staging/radon-staging/`. **The first kit here that does not
-use fastboot at all.** The FLX1s is flashed over MediaTek's BROM/preloader link
+**The first kit here that does not use fastboot at all.** The FLX1s is flashed over MediaTek's BROM/preloader link
 — SP Flash Tool on Windows, `mtkclient` on Linux. There is no fastboot step in
 the install and no `fastboot getvar` to interrogate the device with, which
 changes several habits this document otherwise assumes.
@@ -145,7 +146,7 @@ device.
 readable over the same preloader link that did the flashing:
 
 ```
-( cd ~/mtkclient && python3 mtk.py r expdb expdb.bin )
+python3 mtk.py r expdb expdb.bin     # from a mtkclient checkout
 strings expdb.bin | grep -iE 'kernel|panic|watchdog' | tail -40
 ```
 
@@ -177,9 +178,9 @@ only cheap way back. `restore-stock.sh` writes it back.
 
 Since 4 Sep 2026 the bluejay/panther images come out of bitbake (`MACHINE=<dev> bitbake luneos-bootimg-gki`) rather than hand-run mkbootimg, and the staging kits were re-cut from those; `ANDROID_BOOTIMG_INIT_BOOT = "1"` in the machine conf is what splits panther's pair. The bitbake initramfs also carries a fix the hand-built kits predated: `0001-halium-find-the-Android-image-instead-of-assuming-whe.patch` (30 Aug), which fixes exactly the "userdata image with only rootfs.img in it does not boot" case the flashed-userdata install relies on — always cut kits from current bitbake images.
 
-## Installer end state (plan §8, not yet built)
+## Installer end state (not yet built)
 
-`luneos-installer` (Python, host-side): detect the device (`fastboot getvar product`, `ro.product.device`, `ro.board.api_level`, `ro.boot.slot_suffix`, boot header version from the stock boot.img) → look up `devices/<codename>/deviceinfo`; unknown devices get "generic GKI" mode (pull the stock boot/init_boot off the device, repack with the LuneOS initramfs, warn loudly) → download universal `rootfs.img`, `system-gsi-<vndk>.img`, boot images → flash vbmeta/boot/init_boot, format userdata unencrypted, push the two images → reboot.
+`luneos-installer` (Python, host-side): detect the device (`fastboot getvar product`, `ro.product.device`, `ro.vndk.version` or `ro.vendor.build.version.sdk` — `ro.board.api_level` is a YYYYMM date on A15+ vendors — `ro.boot.slot_suffix`, boot header version from the stock boot.img) → look up `devices/<codename>/deviceinfo`; unknown devices get "generic GKI" mode (pull the stock boot/init_boot off the device, repack with the LuneOS initramfs, warn loudly) → download universal `rootfs.img`, `system-gsi-<vndk>.img`, boot images → flash vbmeta/boot/init_boot, format userdata unencrypted, push the two images → reboot.
 
 ## lk2nd devices (Galaxy A3 (2015), 8 Oct 2026)
 

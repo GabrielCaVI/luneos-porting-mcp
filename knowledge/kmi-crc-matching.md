@@ -1,15 +1,15 @@
 # Matching a vendor's kernel: vermagic, CRCs and the mistakes that cost builds
 
-How to make a rebuilt kernel that the device's own vendor modules still load into,
-and how to diagnose it when they do not. Distilled from bramble (218 modules, 0
-failing) and from sunfish, where the same problem took eight builds and several
-wrong turns — every one of which is written down here as a "don't", because the
+How to build a kernel that the device's own vendor modules still load into, Tier A or Tier B, and how to diagnose it when they do not.
+
+Distilled from bramble (218 modules, 0 failing) and from sunfish, where the same
+problem took eight builds and several wrong turns — every one of which is written down here as a "don't", because the
 reasoning that produced them was plausible each time.
 
-The rule this all serves: **on a Tier B device that keeps its vendor's kernel
-modules, the vendor's kernel is the specification and your kernel is the
-implementation.** Everything below is about finding out what that specification
-actually is, rather than what a repository suggests it might be.
+The rule this all serves: **on any device that keeps its vendor's kernel
+modules — Tier A GKI or Tier B — the vendor's kernel is the specification and
+your kernel is the implementation.** Everything below is about finding out what
+that specification actually is, rather than what a repository suggests it might be.
 
 But read Step −1 first. The cheapest way to satisfy a specification is often to
 build the thing yourself rather than to reverse-engineer a binary's expectations
@@ -55,21 +55,19 @@ ourselves.
 The CRC route has a hard ceiling, and it is not a matter of finding the right
 option. The LuneOS delta moves the CRC of **8158 of 12823 exported symbols** on
 this kernel (measured: diff the two `Module.symvers`), because two of the options
-LuneOS wants reach a struct that almost every prototype reaches:
+in the LuneOS delta reach a struct that almost every prototype reaches:
 
 | Option | Changes | Reached by |
 |---|---|---|
 | `FANOTIFY` | `atomic_t fanotify_listeners` in `struct user_struct` (`include/linux/sched/user.h`) | `struct cred.user`, and `cred` is reachable from `file`, `sock`, `task_struct`, and from `device` via `class` → `kobj_ns_type_operations` → `sock` |
 | `CGROUP_DEVICE` | `SUBSYS(devices)` bumps `CGROUP_SUBSYS_COUNT`, which dimensions `subsys[]`, `e_cset_node[]`, `e_csets[]` in `struct css_set` / `struct cgroup` | `task_struct.cgroups` |
-| `SYSVIPC` | `sysvsem`, `sysvshm` in the middle of `task_struct` | every symbol taking a task |
 
 **The poison sets overlap, so the drift is a max and not a sum.** This is the
 single most important thing to know before trying to fix drift by removing
-options: dropping `SYSVIPC` from sunfish changed the whole-tree figure by
-*nothing at all* — 8158 of 12823 before, 8158 of 12823 after — because `FANOTIFY`
-and `CGROUP_DEVICE` independently poison the same symbols. A change that removes
-one poisoner while another stays shows up as zero improvement, which reads exactly
-like "the option was innocent" and is not.
+options: in the table below `FANOTIFY` alone moves exactly as many sampled CRCs
+as the whole delta, and `CGROUP_DEVICE` alone most of the same ones. A change
+that removes one poisoner while another stays shows up as zero improvement,
+which reads exactly like "the option was innocent" and is not.
 
 Everything else in the fragment is CRC-free. Measured per option on sunfish, over
 164 CRCs sampled from `fs/inode.o`, `drivers/base/{core,platform}.o`,
@@ -79,7 +77,6 @@ Everything else in the fragment is CRC-free. Measured per option on sunfish, ove
 |---|---|
 | the whole LuneOS delta | 143 / 164 |
 | `FANOTIFY` alone | 143 / 164 |
-| `SYSVIPC` alone | 143 / 164 |
 | `CGROUP_DEVICE` alone | 118 / 164 |
 | `PID_NS` + `USER_NS` | 0 |
 | `VT` + `VT_CONSOLE` + `HW_CONSOLE` + `DUMMY_CONSOLE*` + `CONSOLE_TRANSLATIONS` | 0 |
@@ -90,14 +87,16 @@ Everything else in the fragment is CRC-free. Measured per option on sunfish, ove
 
 Note what is *not* in that list: the namespace options. `struct nsproxy` is
 unconditional and `struct user_namespace`'s members are gated only by
-`PERSISTENT_KEYRINGS`/`SYSCTL`, so `PID_NS` and `USER_NS` are KMI-free — the
-opposite of what the shape of the problem suggests, and worth checking rather
-than assuming for any option you are about to fight.
+`PERSISTENT_KEYRINGS`/`SYSCTL`, so `PID_NS` and `USER_NS` are KMI-free on this
+tree — the opposite of what the shape of the problem suggests, and worth checking
+rather than assuming for any option you are about to fight. It is per tree: on
+the Q25's MediaTek 5.10 tree `USER_NS` stays off (device-q25.md).
 
-The `#ifndef __GENKSYMS__` trick works for **one** struct (it took bramble to
-0/218 for SYSVIPC alone). It does not scale to `user_struct` plus a config-sized
-array dimension in `css_set`, and a patch series hiding all of them would be a
-permanent maintenance burden on the most churn-prone headers in the tree.
+The `#ifndef __GENKSYMS__` trick (hide a member appended at the end of a struct
+from genksyms; see the workaround of last resort below) works for **one**
+struct. It does not scale to `user_struct` plus a config-sized array dimension in
+`css_set`, and a patch series hiding all of them would be a permanent
+maintenance burden on the most churn-prone headers in the tree.
 
 ### How to attribute drift in minutes instead of hours
 
@@ -123,7 +122,10 @@ because CRCs do not depend on codegen.
 Three pieces, all small (sunfish's are the reference implementation):
 
 1. **Put them in the machine initramfs, not the rootfs.** The rootfs is the
-   generic `halium-arm64` one and cannot carry per-machine modules; and shipping
+   generic `halium-arm64` one, built once for every machine, so no machine's
+   module package lands in it (patching the built `rootfs.img` is the other
+   route: kernel-porting.md § Shipping kernel modules to a device that flashes
+   the generic rootfs); and shipping
    modules in the same image as the kernel they were built against is the only
    arrangement in which the two cannot drift apart.
 
@@ -193,8 +195,8 @@ mount --bind "$stage" "$ANDROID_ROOT/vendor/lib/modules"
 The modules must reach the rootfs first: ship them in the machine **initramfs**
 (`KERNEL_SPLIT_MODULES = "0"` + `ANDROID_EXTRA_INITRAMFS_IMAGE_INSTALL =
 "kernel-modules"`) and stage them across in `init.sh`'s `mount_kernel_modules()`
-hook, because the generic halium-arm64 rootfs cannot carry per-machine modules
-and the initramfs is freed at `switch_root`.
+hook, because no machine's module package lands in the generic halium-arm64
+rootfs and the initramfs is freed at `switch_root`.
 
 **Shape B - modules live in the vendor_boot ramdisk (bramble, Tensor GKI).** The
 bootloader merges vendor_boot's ramdisk and then ours, and `init.sh`'s
@@ -566,48 +568,16 @@ the switch.
 
 ---
 
-## The LuneOS delta: SYSVIPC is gone, and that did not help the KMI
+## The LuneOS delta: what still poisons
 
 LuneOS needs a small set of options an Android defconfig omits (see
-kernel-porting.md). Most are CRC-neutral.
+kernel-porting.md). Most are CRC-neutral. `CONFIG_SYSVIPC` is not in it: LuneOS
+does not need SysV IPC, so leave `# CONFIG_SYSVIPC is not set`.
 
-**`CONFIG_SYSVIPC` used to be mandatory and is not any more (Sep 2026).** It was
-required because `libPmLogLib` called `shmget()`/`shmat()` and
-`surface-manager.sh` runs `PmLogCtl` on its first line, so without SysV IPC the
-compositor never started and nothing said why. That dependency has since been
-removed from PmLogLib - verifiable rather than assumed:
-
-```sh
-nm -D libPmLogLib.so.3.3.0 | grep -cE ' U (shmget|shmat|shmdt)'   # 0
-```
-
-This is a real simplification of the *fragment* - one fewer option to justify,
-and `CONFIG_IPC_NS` depends on it and disappears with it. SYSVIPC is genuinely
-KMI-hostile: it inserts `sysvsem` and `sysvshm` into the middle of `task_struct`,
-shifting every member after them, so the CRC of every exported symbol whose
-prototype mentions a task changes - `module_layout` included. Measured on sunfish:
-143 of 164 sampled CRCs, on its own.
-
-**But dropping it bought no KMI improvement, and expecting one was a mistake worth
-recording.** sunfish's drift against LineageOS was 8158 of 12823 exported symbols
-with SYSVIPC on and 8158 of 12823 with it off - identical, because `FANOTIFY` and
-`CGROUP_DEVICE` poison the same symbols on their own (143 and 118 of the same 164).
-Poison sets overlap, so **drift is a max, not a sum**: removing one poisoner while
-another remains reads as "no effect" and tells you nothing about the option you
-removed. Attribute per option (see the three-minute harness above) before claiming
-a config change will fix module loading.
-
-So: **check whether it is still in the fragment before doing any work to
-accommodate it.** On sunfish and bramble the correct setting is now
-
-```
-# CONFIG_SYSVIPC is not set
-```
-
-and the genksyms patches that existed only to make it survivable have been
-deleted from both recipes. What is left poisoning sunfish is `FANOTIFY` (added for
-systemd) and `CGROUP_DEVICE`; dropping both takes the sampled drift to 0, but
-neither is worth dropping on this device - see the sunfish note below.
+What is left poisoning sunfish is `FANOTIFY` and `CGROUP_DEVICE` (143 and 118 of
+the same 164 sampled CRCs). Dropping both takes the sampled drift to 0, but on
+sunfish that buys nothing, because it builds its own modules (Step −1) and the
+vendor's prebuilts fail anyway (below).
 
 ### Does anything actually need `FANOTIFY` or `CGROUP_DEVICE`?
 
@@ -615,9 +585,8 @@ Asked and answered on sunfish, because it is the obvious next question once you
 know they are the only two poisoners.
 
 **`FANOTIFY`: nothing appears to need it. Removable, pending one control test.**
-Three checks, the third still outstanding:
 
-- bluejay, panther, tangorpro and mindphone boot the *same* halium-arm64 rootfs
+- bluejay, panther and tangorpro boot the *same* halium-arm64 rootfs
   with `# CONFIG_FANOTIFY is not set` — meta-android's shared GKI fragment already
   lists it as KMI-poison and leaves it out. Same systemd build, no fallout. This is
   the strongest evidence available and it costs nothing to look up.
@@ -640,14 +609,11 @@ It was in sunfish's fragment under a "systemd's mount/automount machinery" comme
 — an assumption inherited from that checker, never a measurement, and the most
 expensive one in the file.
 
-**The outstanding test, and why it is worth doing anyway:** the GKI devices prove
-systemd *starts* without fanotify, not that a complete LuneOS stack is unaffected.
-sargo is the reference device with a full working stack (UI, Atlas), so it is where
-to prove it — `LUNEOS_TEST_NO_FANOTIFY=1` in its recipe flips the option for one
-build, and `staging/sargo-staging/check-fanotify-users.sh` answers the same question
-with no rebuild at all by counting live fanotify fds on a booted device (`total: 0`
-on a FANOTIFY=y kernel means nothing would be taken away). sunfish keeps
-`CONFIG_FANOTIFY=y` until that comes back clean.
+**Open:** the GKI devices prove systemd *starts* without fanotify, not that a
+full LuneOS stack is unaffected; the control test on sargo
+(`LUNEOS_TEST_NO_FANOTIFY=1` in `linux-google-sargo`, or counting live fanotify
+fds on a booted device) has no recorded result, and sunfish keeps
+`CONFIG_FANOTIFY=y` until it does.
 
 **`CGROUP_DEVICE`: kept, because it does something.** 7 units in the shipped rootfs
 carry `DeviceAllow=`/`DevicePolicy=` (`systemd-logind`, both `systemd-journald`
@@ -679,30 +645,6 @@ keeps every pre-existing offset. It does **not** apply to `CGROUP_DEVICE`: that
 changes an array *dimension* in the middle of `css_set`/`cgroup`, so hiding it from
 genksyms would publish a CRC for an offset layout the kernel does not have — a
 silent wrong answer instead of a loud refusal.
-
-### If some future component needs it again
-
-Two ways to have SysV IPC and a stable KMI, in order of preference. Both are now
-historical on these devices - do not reintroduce them without first confirming
-the requirement is real:
-
-1. **Android KABI padding** (5.x trees): park the members in
-   `ANDROID_KABI_RESERVE` slots. Needs three free slots - check, because on
-   4.19/redbull only slot 8 was free and this did not fit.
-2. **Hide the growth from genksyms** (any tree): declare the members at the very
-   end of `task_struct`, below `thread`, inside `#ifndef __GENKSYMS__`. genksyms
-   then computes the ABI of a `CONFIG_SYSVIPC=n` kernel while the compiler sees
-   the fields. Safe because no module allocates a `task_struct`, and on arm64
-   `thread_struct` is fixed-size, so no pre-existing offset moves. Measured at
-   the time on bramble: full LuneOS delta, **0 of 218 modules failing**.
-
-The trick generalises to any single struct, but it does **not** scale: the
-namespace structs (`ipc_namespace`, `pid_namespace`, `user_namespace`, reached
-from `task_struct` via `nsproxy`) and `struct inode` under `FANOTIFY` would each
-need the same treatment, across the most churn-prone headers in the tree. That
-is why "build the vendor's modules instead" (Step -1) is the better answer when
-the source is available - and why dropping the requirement outright is better
-than either.
 
 ## Checklist before flashing a rebuilt Tier B kernel
 

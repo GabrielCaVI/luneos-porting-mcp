@@ -1,10 +1,9 @@
 # Device Bring-up in meta-smartphone / Yocto
 
-How a LuneOS device port is wired into the Yocto build: repo and layer geography, what a
-machine conf must contain, the generic `halium-arm64` machine, the GKI boot-image machine
-pattern proven on bluejay (Pixel 6a) and panther (Pixel 7), the android-system-image recipe
-mechanics, LXC container config, 32-bit pitfalls from mindphone (MT6739), and the build
-failures worth remembering. Everything here was established on real hardware during the
+How a LuneOS port is wired into Yocto: layer geography, machine confs, the generic halium-arm64 machine, GKI boot-image machines, GSI recipes, LXC config and build traps.
+
+The GKI machine pattern was proven on bluejay (Pixel 6a) and panther (Pixel 7), the
+32-bit pitfalls on mindphone (MT6739); most of the rest was established during the
 sargo/bluejay/panther/mindphone ports (Aug–Sep 2026).
 
 ## ANDROID_BOOTIMG_* changes do not always re-run do_deploy
@@ -46,20 +45,20 @@ zero. Nothing in the build complains.
   android-headers, the GSI recipe base, initramfs and lxc-android live there, and no recipe
   in it names a device. The planned `meta-halium` layer was deliberately dropped — all GSI
   work lives in `meta-smartphone/meta-android`.
-- Vendor layers hold the device machines: `meta-smartphone/meta-google` (sargo, bluejay,
-  panther), `meta-smartphone/meta-greentouch` (mindphone), plus `meta-xiaomi`,
+- Vendor layers hold the device machines: `meta-smartphone/meta-google` (sargo, sunfish,
+  bramble, bluejay, panther, tangorpro), `meta-smartphone/meta-greentouch` (mindphone), plus `meta-xiaomi`,
   `meta-oneplus`, etc. Long-term these are deleted for Halium/GSI targets and kept only for
   mainline/legacy non-Treble devices.
 - LuneOS distro bits: `meta-webos-ports/meta-luneos` (nyx-modules recipe, defaulttunes,
   the HAL glue recipes: libgbinder, ofono-binder-plugin, pulseaudio-modules-droid,
   bluebinder, sensorfw, qt6-qpa-hwcomposer-plugin, nyx-modules-hybris, waydroid, …).
-- **Target branch: `Herrie82/meta-smartphone` → `herrie/wrynose`. scarthgap is dead.**
-  The abandoned prior art is the single-commit `herrie/kirkstone-halium9-gsi` branch
-  (`daf7fb55`), which is a mido config wearing a generic name — see the migration plan
-  before reusing anything from it.
-- Build tree: `/media/herrie/LuneOS/wrynose/webos-ports`, entered with
-  `MACHINE=<machine> . ./setup-env`. mindphone uses TMPDIR `/home/herrie/wrynose-tmp/tmp`
-  (webos-ports/tmp symlinks there).
+- **Yocto release: wrynose.** Upstream is `shr-distribution/meta-smartphone` branch
+  `wrynose`; the port work in these notes was verified against the
+  `Herrie82/meta-smartphone` branch `herrie/wrynose-structured`. The abandoned prior art
+  is the single-commit `herrie/kirkstone-halium9-gsi` branch (`daf7fb55`), which is a
+  mido config wearing a generic name — do not reuse anything from it unchecked.
+- Build tree: a `webos-ports` checkout (`$BUILD_DIR`), entered with
+  `MACHINE=<machine> . ./setup-env`.
 
 ## What a machine conf contains
 
@@ -102,7 +101,7 @@ MACHINE_ESSENTIAL_EXTRA_RDEPENDS = ""
 IMAGE_FSTYPES = "ext4 tar.gz"
 ```
 
-**Do NOT drop `TUNE_PKGARCH:append = "-halium"`** (revised 2026-08-24): `aarch64` is
+**Do NOT drop `TUNE_PKGARCH:append = "-halium"`**: `aarch64` is
 already produced by non-Halium arm64 machines (pinetab2) and TMPDIR is shared, so removing
 the taint would mix libhybris-linked and mesa-linked packages in one feed. The actual
 enemy is the **MACHINE_ARCH feed**: 49 recipes were machine-arch for sargo, measured with
@@ -117,10 +116,9 @@ Anything landing in a `halium-arm64/` feed dir is a bug — move it to the adapt
 
 ## GKI device machines (bluejay / panther pattern, 4 Sep 2026)
 
-Both devices build boot images from bitbake:
+Both devices build kernel and boot images from bitbake:
 
 ```
-MACHINE=bluejay bitbake initramfs-android-image
 MACHINE=bluejay bitbake luneos-bootimg-gki      # same for panther
 ```
 
@@ -134,19 +132,26 @@ Files that make it work:
 |---|---|
 | `meta-android/lib/halium/bootimg.py` | v3/v4 boot image writer — verified **byte-identical** to AOSP `mkbootimg.py` for all four shipped shapes (kernel-only, ramdisk-only, kernel+ramdisk, kernel+ramdisk+`enable_adb`) |
 | `meta-android/classes/kernel_android.bbclass` | routes header_version >= 3 to the new writer; stops splitting an appended dtb for v3+ (no dtb section exists) |
-| `meta-android/classes/gki_bootimg.bbclass` | packs a **prebuilt** GKI kernel + the machine initramfs |
-| `meta-google/conf/machine/{bluejay,panther}.conf` | the machines |
-| `meta-google/recipes-bsp/gki-bootimg/luneos-bootimg-gki_1.0.bb` | the packing recipe |
-| `meta-luneos/…/nyx-modules/{bluejay,panther}.cmake` | copies of halium-arm64.cmake — **a machine without one does not parse** |
+| `meta-android/recipes-kernel/linux-halium-gki/linux-halium-gki_6.1.bb` | builds the ACK android14-6.1 kernel in-tree |
+| `meta-android/classes/gki_bootimg.bbclass` | packs that kernel + the machine initramfs |
+| `meta-google/conf/machine/{bluejay,panther}.conf` | the machines (`GKI_BOOTIMG = "1"`, `PREFERRED_VERSION_linux-halium-gki = "6.1%"`) |
+| `meta-android/recipes-bsp/gki-bootimg/luneos-bootimg-gki_1.0.bb` | the packing recipe, enabled by `GKI_BOOTIMG = "1"` |
 
-**The kernel deliberately stays outside bitbake.**
-`PREFERRED_PROVIDER_virtual/kernel = "linux-dummy"`, and `GKI_KERNEL_IMAGE` (set in
-`local.conf`) points at the Image that `build-bootimg.sh` produced from the ACK/Bazel tree.
-Rebuilding ACK with OE's cross toolchain would move the exported-symbol CRCs under
-`CONFIG_MODVERSIONS` and the stock vendor modules would stop loading — which is the whole
-Tier A property (stock `vendor_boot`/`vendor_dlkm` modules keep loading against our
-kernel). `do_deploy[file-checksums]` hashes that file so a new kernel really rebuilds the
-images instead of returning stale sstate.
+**The kernel is built in-tree, but not with the OE toolchain.** `linux-halium-gki_6.1.bb`
+builds ACK android14-6.1 with plain kbuild and Google's prebuilt clang 17 (r487747c), the
+compiler the KMI was frozen with: rebuilding ACK with OE's cross toolchain would move the
+exported-symbol CRCs under `CONFIG_MODVERSIONS` and the stock vendor modules would stop
+loading — which is the whole Tier A property (stock `vendor_boot`/`vendor_dlkm` modules
+keep loading against our kernel). `gki_bootimg.bbclass` takes the kernel from
+`GKI_KERNEL_PROVIDER ?= "linux-halium-gki"` by default; setting `GKI_KERNEL_IMAGE`
+overrides it with an out-of-tree Image (e.g. one built by `build-bootimg.sh` in
+github.com/Herrie82/luneos-bootimg-bluejay). `PREFERRED_PROVIDER_virtual/kernel =
+"linux-dummy"` only means the rootfs carries no kernel. bluejay, panther and
+tangorpro use the 6.1 recipe; there is no `linux-halium-gki_5.10.bb` (q25 builds its
+own kernel: `GKI_KERNEL_PROVIDER = "linux-zinwa-q25"`).
+
+No nyx-modules file is needed per machine: module selection lives in
+`nyx-modules-machines.inc` (see nyx-modules.md).
 
 **`ANDROID_BOOTIMG_INIT_BOOT = "1"`** is what splits the output into a kernel-only `boot`
 plus a ramdisk-only `init_boot` (panther, A13-launch layout). bluejay sets `"0"` and gets
@@ -165,16 +170,14 @@ flashed-userdata install relies on. Both staging kits were re-cut from the bitba
 ## Build commands
 
 ```sh
-cd /media/herrie/LuneOS/wrynose/webos-ports && . ./setup-env
+cd $BUILD_DIR && . ./setup-env
 
-MACHINE=bluejay   bitbake initramfs-android-image
-MACHINE=bluejay   bitbake luneos-bootimg-gki
+MACHINE=bluejay   bitbake luneos-bootimg-gki        # kernel + boot images
 MACHINE=panther   bitbake luneos-bootimg-gki
 MACHINE=mindphone bitbake luneos-dev-image          # full image (long)
 
 # mindphone kernel (Tier B, in-tree BSP kernel):
-MACHINE=mindphone bitbake -R /media/herrie/LuneOS/wrynose/gsi11-limits.conf \
-    linux-greentouch-mindphone
+MACHINE=mindphone bitbake linux-greentouch-mindphone
 # → deploys zImage-mindphone.fastboot (= boot.img) under tmp/deploy/images/mindphone/
 ```
 
@@ -195,36 +198,40 @@ Repack inputs live under `tmp/deploy/images/`: e.g.
   image root), so `pre-start.sh` takes its `[ -e /android/init ]` branch. `/vendor` inside
   the GSI is a real empty directory (0755, gid 2000), a clean mount point for either a
   loop-mounted `vendor.img` or the device's stock vendor.
-- The **Test A dual-tarball pattern** (`android-system-image-sargo.bb`): fetch both the
-  device tarball and the generic GSI tarball, select with a variable, always take
-  `vendor.img` from the device tarball:
+- The **selection pattern** (`android-system-image-sargo.bb`): two knobs pick the
+  system image and the vendor; the default is the GSI over the phone's stock `/vendor`
+  (mounted by `mount_device_vendor()` in initramfs-scripts-halium), the Treble
+  arrangement:
 
 ```bitbake
-SARGO_ANDROID_SYSTEM ?= "gsi"     # or "device"
+SARGO_ANDROID_SYSTEM ?= "gsi"     # or "device": the old sargo-specific Halium 9 build
+SARGO_ANDROID_VENDOR ?= "none"    # "none": mount the phone's own /vendor; "device": ship vendor.img
 
-SRC_URI = "\
-    ...halium-luneos-9.0-${PV}-${MACHINE}.tar.bz2;name=device;subdir=device \
-    ...halium-luneos-9.0-${GSI_PV}-halium_arm64.tar.bz2;name=gsi;subdir=gsi \
-"
+SRC_URI = ".../${SARGO_GSI_RELEASE}/${SARGO_GSI_TARBALL};name=gsi;subdir=gsi"
+# the device tarball is fetched only when one of the two knobs asks for it
+SRC_URI += "${@d.getVar('SARGO_DEVICE_URI') if 'device' in (d.getVar('SARGO_ANDROID_SYSTEM'), d.getVar('SARGO_ANDROID_VENDOR')) else ''}"
 
 do_install:prepend() {
     cp ${UNPACKDIR}/${SARGO_ANDROID_SYSTEM}/system.img ${UNPACKDIR}/system.img
-    cp ${UNPACKDIR}/device/vendor.img ${UNPACKDIR}/vendor.img
+    rm -f ${UNPACKDIR}/vendor.img
+    if [ "${SARGO_ANDROID_VENDOR}" = "device" ]; then
+        cp ${UNPACKDIR}/device/vendor.img ${UNPACKDIR}/vendor.img
+    fi
 }
 ```
 
 The copy sits in `do_install:prepend` rather than a `do_unpack` postfunc because the `.inc`
 consumes `${UNPACKDIR}/system.img` in place, so re-copying keeps a re-run idempotent.
-Reverting is `SARGO_ANDROID_SYSTEM = "device"` in `local.conf` — no refetch.
 
-- mindphone points at its 32-bit GSI the same way:
-  `android-system-image-mindphone.bb` → `halium-luneos-16.0-20260827-1-halium_arm.tar.bz2`
-  (382 MB android-rootfs.img), via `file://` until published on
-  `webOS-ports/halium-images`.
-- Published generic GSIs: `webOS-ports/halium-images` hosts `halium_arm64` releases for
-  9.0/10.0/11.0; 14.0 and 16.0 tarballs exist in `DL_DIR` only
-  (`halium-luneos-<ver>-<date>-N-halium_arm64.tar.bz2`) — publishing them is an open
-  action item.
+- mindphone points at its 32-bit GSI through the same include, with
+  `HALIUM_LUNEOS_GSI16_ARCH = "halium_arm"` and its own PV/SHA in
+  `android-system-image-mindphone.bb`.
+- Published generic GSIs: `webOS-ports/halium-images` hosts them all. The date-tagged
+  `halium-luneos-20260826` release carries 9.0/11.0/13.0/14.0/16.0 `halium_arm64` (plus
+  11.0 and 16.0 `halium_arm`); later 16.0 builds are in `halium-luneos-20260910` and
+  `halium-luneos-20261005`. The 16.0 release in use is pinned once, in
+  `meta-android/recipes-core/android-system-image/halium-luneos-gsi-16.inc`
+  (`HALIUM_LUNEOS_GSI16_PV`/`_SHA256`/`_ARCH`, weak assignments a device may override).
 
 ## LXC container config
 
@@ -248,12 +255,13 @@ Historical bugs in `meta-android/recipes-core/android-system/` and their fixes
   `by-partuuid`/`by-id` trying `<name>$slot` before `<name>`, validates the mount via
   `/vendor/build.prop`, and maps `super` via `dmsetup create --concise` fed by
   `parse-android-dynparts`. Retrofit dynamic partitions (metadata on `system`, extents
-  spanning `system`+`vendor`, no `super` — sargo from Android 11) are supported
+  spanning `system`+`vendor`, no `super` — sargo from Android 10) are supported
   (`03508c3e`) and covered by `tests/loopback-retrofit-test.sh` (22 assertions).
 - LXC 4.0.12 on a 4.14/arm32 kernel: legacy clone kept `CLONE_PIDFD` → `EINVAL`; patched
   in the lxc recipe (mindphone).
-- Note the kernel-side constraint from the bluejay KMI work: with `IPC_NS` off (KMI-poison
-  list), **LXC must not unshare the IPC namespace**; `PID_NS` is available.
+- LuneOS kernels leave `CONFIG_SYSVIPC` (hence `IPC_NS`) off, and `USER_NS` is KMI-poison
+  on MediaTek mgk (q25, mp01), so **LXC must not unshare the IPC or user namespace** — the shipped
+  `lxc-config` keeps both; `PID_NS` is available.
 
 ## 32-bit arch pitfalls (mindphone)
 
@@ -298,14 +306,15 @@ Historical bugs in `meta-android/recipes-core/android-system/` and their fixes
 5. `unifdef.c` declares `static bool constexpr;` — C23 made that a keyword; pin the host C
    standard or rename (hit on both sargo's 4.9 host tools and mindphone's 4.14 tree).
 
-## Device-agnostic principles (migration plan §6.5/§6.6)
+## Device-agnostic principles
 
 When adding per-device config, prefer this order:
 
 - **Tier 0 — derive at runtime** (target: everything): HAL services, init gates and node
   permissions from the container's own rc files; display density from `ro.sf.lcd_density`
   and geometry from hwcomposer/DRM; partitions by name + `slot_suffix`; vendor API level
-  from `ro.board.api_level`/`ro.vndk.version` (never `ro.build.version.release`); RIL
+  from `ro.vndk.version`, or `ro.vendor.build.version.sdk` where `ro.board.api_level` is
+  a YYYYMM date (A15+ vendors) — never `ro.build.version.release`; RIL
   topology enumerated from hwservicemanager.
 - **Tier 1 — `deviceinfo`** (declarative, UBports/postmarketOS-compatible names:
   `deviceinfo_codename`, `deviceinfo_bootimg_header_version`, `deviceinfo_flash_offset_*`,

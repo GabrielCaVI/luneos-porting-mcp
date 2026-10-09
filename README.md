@@ -108,7 +108,7 @@ Topics (auto-discovered from `knowledge/*.md`):
 | `installing` | flash kits, userdata images, fastboot flows, anti-rollback |
 | `tools` | kmi-crc-check, module-order, payload_extract, mer-kernel-check, … |
 | `deviceinfo-reference` | the UBports/HGABT `deviceinfo` variable reference our Tier 1 format reuses |
-| `device-bluejay` / `device-panther` / `device-mindphone` / `device-sargo` / `device-zinwa-q25` / `device-mp01` / `device-athena` / `device-sunfish` / `device-surya` / `device-fajita` / `device-sm-t220` | per-device reference |
+| `device-bluejay` / `device-panther` / `device-mindphone` / `device-sargo` / `device-q25` / `device-mp01` / `device-athena` / `device-sunfish` / `device-surya` / `device-fajita` / `device-sm-t220` / `device-a3-2015-halium` | per-device reference |
 
 ### Tools
 

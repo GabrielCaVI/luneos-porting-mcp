@@ -1,7 +1,8 @@
 # Device: mp01 (Minimal Phone MP01, vendor codename Z10)
 
-4.3" **E Ink** phone with a physical QWERTY, from The Minimal Company. Would be
-the first LuneOS port to an electrophoretic display.
+Minimal Phone MP01 (`MP01`, vendor codename Z10), 4.3" E Ink QWERTY phone on MediaTek Helio G99 (MT6789), Tier A on the Q25's kernel tree; boots to the LuneOS UI.
+
+From The Minimal Company; the first LuneOS port to an electrophoretic display.
 
 **Status (17 Sep 2026): boots to the LuneOS UI on the shared `halium-arm64`
 rootfs.** Working on hardware: display (rotated E Ink panel), touch, keyboard,
@@ -10,8 +11,8 @@ fingerprint, sensors, charging detection. Open: battery percentage (fuel gauge
 reports -1), a WiFi power-on race, web apps cropped in portrait. See
 "Bring-up results" below; the sections before it describe the pre-boot work.
 
-Layer `meta-smartphone/meta-minimal`, `MACHINE=mp01`. Port directory
-`~/webos/LuneOS/MP01` (notes, firmware, KMI gate, `dump-expdb.sh`).
+Layer `meta-smartphone/meta-minimal`, `MACHINE=mp01`. The port's tool directory
+holds the notes, firmware, KMI gate and `dump-expdb.sh`.
 
 ## The one-line summary
 
@@ -64,20 +65,8 @@ Two things that fall out of building a different tree than the config came from:
   `CONFIG_LOCALVERSION="-android12-9-gdeb4d30d3489"`, `LOCALVERSION_AUTO` off,
   and an empty `.scmversion`.
 
-KMI-poison list is the Q25's, re-measured here: `CONFIG_SYSVIPC` (with
-
-> **Sep 2026: the SYSVIPC requirement was dropped.** PmLogLib no longer calls
-> `shmget()`/`shmat()` (`nm -D libPmLogLib.so.3.3.0 | grep -c shmget` -> 0), so
-> `# CONFIG_SYSVIPC is not set` is now correct everywhere and `CONFIG_IPC_NS` goes
-> with it. Anything below that treats it as mandatory, or describes working around
-> its CRC damage, is history - see kmi-crc-matching.md.
->
-> **It does not follow that the KMI got better.** Measured on sunfish: drift was
-> 8158 of 12823 exported symbols with SYSVIPC on and 8158 of 12823 with it off,
-> because `FANOTIFY` and `CGROUP_DEVICE` poison the same symbols independently.
-> Poison sets overlap, so drift is a max and not a sum - removing one poisoner
-> while another stays shows up as no improvement at all.
-`SYSVIPC_SYSCTL`, `IPC_NS`) and `CONFIG_USER_NS`. `PID_NS` and
+KMI-poison list is the Q25's, re-measured here: `CONFIG_USER_NS` and/or SysV
+IPC, held out as a group (both stay off). `PID_NS` and
 `CHECKPOINT_RESTORE` are clean.
 
 ### ThinLTO is worth it during bring-up
@@ -106,7 +95,7 @@ No debug UART, and the panel is E Ink behind another module. A failing MP01 is
 reset. This drove four separate findings now generalised into debugging.md
 1.9–1.14 — read those before debugging any MediaTek GKI device.
 
-`~/webos/LuneOS/MP01/dump-expdb.sh` is the way in: MediaTek's `expdb` partition
+`dump-expdb.sh` (in the port's tool directory) is the way in: MediaTek's `expdb` partition
 over mtkclient. It is what proved our init *was* running and the watchdog was
 killing the debug shell.
 
@@ -136,7 +125,7 @@ killing the debug shell.
 
 ## Install
 
-`/media/herrie/LuneOS/mp01-staging/` (`mp01_20260914.zip`). Modelled on the Q25
+The device's staging kit (`mp01_20260914.zip`). Modelled on the Q25
 kit, four differences:
 
 1. **All three vbmeta images** are attempted, but lk only exposes the top-level
@@ -150,7 +139,7 @@ kit, four differences:
    unlock itself is refused too — that switch only exists inside booted Android.
 3. **Partition-size check** before flashing userdata (see the scatter trap
    above).
-4. **No `fastboot -w`** on top of the Q25's no-`fastboot boot` rule; the
+4. **No `fastboot -w`**, on top of the Q25's no-`fastboot boot` rule (device-q25.md § The install kit); the
    community guide reports `-w` failing here.
 
 Fastboot entry: power fully off, **Volume Up + Power**, navigate with Vol Up,
@@ -214,8 +203,8 @@ separately.
 
 ## Bring-up results (16-17 Sep 2026)
 
-Staging kit: `/media/herrie/LuneOS/mp01-staging/` (`README.md` there has the
-WiFi/BT write-up). LuneOS runs on **slot b**; slot a keeps stock Android.
+Staging kit: the device's staging kit (its `README.md` has the WiFi/BT
+write-up). LuneOS runs on **slot b**; slot a keeps stock Android.
 
 ### Flashing and recovery
 
