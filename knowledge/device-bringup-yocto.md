@@ -251,7 +251,7 @@ BOARD_SUPER_PARTITION_BLOCK_DEVICES   := system vendor
 Retrofit is a device *class* (most phones were upgraded to 10/11 rather than launched on
 it). `mount-android.sh` used to gate on a `super` partition, and `parse-android-dynparts`
 refused multi-device layouts while hardcoding `argv[1]` as the device in every linear
-target; both fixed in `03508c3e`. Single-`super` is a strict subset of the retrofit path
+target; both fixed (`92664d81`, `6d9d712b` on `herrie/wrynose-structured`). Single-`super` is a strict subset of the retrofit path
 (`target_source` always 0), so the fix cannot regress launched-on-A10 devices.
 `tests/loopback-retrofit-test.sh` (22 assertions on loop devices with real
 device-mapper) pins the retrofit mapping and the Android 9 no-metadata behaviour (exit 0,
@@ -269,7 +269,7 @@ are unavailable in the initramfs. It:
 - derives `product` and `odm` from the *vendor's* fstab once vendor is mounted;
 - strips `context=` / `trusted=` mount flags.
 
-**Container config** (`meta-android/recipes-core/android-system/`, `9b32def7`):
+**Container config** (`meta-android/recipes-core/android-system/`, `d6e0ae16`):
 
 - `lxc.arch` is derived from `TARGET_ARCH` (was hardcoded `armhf` — wrong on arm64, but
   armhf targets still exist in the tree, so derive, don't flip); `lxc.uts.name = android`.
@@ -280,9 +280,10 @@ are unavailable in the initramfs. It:
 - `/apex`, `/odm`, `/vendor_dlkm` need no container entries — unlike Droidian, LuneOS
   mounts under `/android`, which *is* the container root (same inode). Droidian's
   reference config marks these `optional` so they cost nothing on older devices.
-- LuneOS kernels leave `CONFIG_SYSVIPC` (hence `IPC_NS`) off, and `USER_NS` is KMI-poison
-  on MediaTek mgk (q25, mp01), so **LXC must not unshare the IPC or user namespace** — the
-  shipped `lxc-config` keeps both; `PID_NS` is available.
+- LuneOS does not need `CONFIG_SYSVIPC`, so `IPC_NS` is off with it, and `USER_NS` is
+  KMI-poison on MediaTek mgk (q25, mp01); **LXC must not unshare the IPC or user
+  namespace** — the shipped `lxc-config` keeps both; `PID_NS` is available
+  (kernel-porting.md § The config delta).
 - LXC 4.0.12 on a 4.14/arm32 kernel: legacy clone kept `CLONE_PIDFD` → `EINVAL`; patched
   in the lxc recipe (found on mindphone).
 - **Do not enable `lxc@android.service`.** `android-system.service` starts the container
@@ -322,11 +323,11 @@ are unavailable in the initramfs. It:
    with no sources wants `S = "${UNPACKDIR}"`.
 4. bash 5.3 (new in wrynose) cannot `source` sysfs uevent files — the failed source aborted
    `mdev-partlabel.sh` before its blkid branch, leaving `/dev/disk/by-partlabel` empty.
-   Fixed (`23edbee8`) by parsing `/sys/.../uevent` instead of sourcing it. By-name
+   Fixed (`4815b208`) by parsing `/sys/.../uevent` instead of sourcing it. By-name
    partition symlinks are what let a generic build mount the stock vendor as
    `/dev/disk/by-partlabel/vendor$slot` instead of hardcoding `mmcblk0p*`.
-5. `unifdef.c` declares `static bool constexpr;` — C23 made that a keyword; pin the host C
-   standard or rename (hit on both sargo's 4.9 host tools and mindphone's 4.14 tree).
+5. Kernel host tools failing on `constexpr` under C23: kernel-porting.md § Old BSP vs
+   modern toolchain.
 
 ## Device-agnostic principles
 

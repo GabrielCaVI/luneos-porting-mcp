@@ -115,11 +115,12 @@ mkbootimg --header_version 2 --pagesize 2048 \
 Android 11 vendor, VNDK 30, 32-bit → the 32-bit `halium_arm` GSI. Build: gsi-building.md §
 Building a 32-bit halium_arm GSI (the v30 VNDK port and the `apex_vndk` block that was
 silently missing). Current pin in `android-system-image-mindphone.bb`:
-`halium-luneos-16.0-20261007-1-halium_arm` (carries `com.android.vndk.v27` to `v34`; the same
-build as the legacy 32-bit devices), pinned separately because the release the arm64 ports
-tracked earlier published no `halium_arm` asset. It travels inside `rootfs.img` as
+`halium-luneos-16.0-20261007-1-halium_arm` (carries `com.android.vndk.v27` to `v34`; the
+build `android-system-image-legacy-gsi.inc` also names), pinned separately because the
+arm64 releases do not always publish a `halium_arm` asset. It travels inside `rootfs.img` as
 `android-rootfs.img` (`VIRTUAL-RUNTIME_android-system-image = "android-system-image-mindphone"`),
-not beside it. `android-headers-halium` is 16.0%. Flashed and confirmed running on 13 Sep 2026.
+not beside it. `android-headers-halium` is 16.0%. The hardware results in Status were
+recorded on an earlier 16.0 `halium_arm` build; a run of this pin is not recorded.
 
 ## Yocto
 
@@ -209,12 +210,15 @@ mtkclient over the preloader recovers it — write `boot` and `userdata` only, n
 - The initramfs lacks `udevadm`/`dumpe2fs`; its `machine.conf` still carries copy-pasted
   `mmcblk0p27/28` values (harmless — only the panic path uses `system_partition`; should be
   by-name).
+- `luneos.cfg` still sets `CONFIG_SYSVIPC=y`; LuneOS does not need it — drop it from the
+  layer.
 
 ## Device-specific traps
 
 - Check the stock kernel's word size before writing a machine conf (`bootopt=`).
-- MTK lk silently refuses boot images above roughly 28 MB (measured on the MP01); keep this
-  one under the 24 MiB partition anyway.
+- Keep the boot image well under the 24 MiB partition: on the same lk family the MP01
+  stopped starting our init once its boot image grew from 28 to 31.6 MB with a larger
+  ramdisk (device-mp01.md § Rejected paths).
 
 ## Sources
 

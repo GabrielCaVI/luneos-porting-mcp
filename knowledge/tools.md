@@ -154,19 +154,19 @@ gets you nowhere. There is also no single `expdb`-equivalent partition: Qualcomm
 crash state lives in ramdumps (Sahara MemoryDebug mode, USB PID 0x900E, only if
 the device is fused for it) or in `rawdump`, both device-dependent.
 
-In practice **on Qualcomm you use ramoops/pstore instead** (see
-debugging.md Stage 0), which is why bluejay, sargo and athena all lean on
-`/sys/fs/pstore/console-ramoops-0` and never needed EDL. The MediaTek situation
-is the unusual one: pstore is often not configured, so `expdb` is the only
-record.
+In practice **on Qualcomm (and Tensor) you use ramoops/pstore instead** where the
+kernel has it (debugging.md Stage 0; bluejay's boot panic was read from
+`/sys/fs/pstore/console-ramoops-0`), and no LuneOS port has needed EDL. Where the
+kernel has no ramoops at all (athena), a pre-initramfs failure is invisible. The
+MediaTek situation is the unusual one: pstore is often not configured, so `expdb`
+is the only record.
 
 ## mer-kernel-check (`mer_verify_kernel_config`)
 
 **Purpose:** check a kernel config against the Mer/Halium/systemd requirement
 list. Run it on the *stock* config (extracted via IKCONFIG) to size the LuneOS
 delta, and on the *shipped* config to confirm every remaining error is
-deliberate. Reference results: bluejay stock 23 errors/59 warnings; mindphone
-stock 13/58; bluejay shipped config 5 errors, all accounted for.
+deliberate. Reference results: kernel-porting.md § The config delta.
 
 **Known quirks (don't chase these):**
 - predates the 5.13 `NF_LOG_SYSLOG` rename → `NF_LOG_IPV4/6` stay "errors" even
@@ -203,16 +203,8 @@ ramdisk-only, kernel+ramdisk, kernel+ramdisk+`enable_adb`).
 
 ## avbtool
 
-Builds a verification-disabled vbmeta:
-
-```
-avbtool make_vbmeta_image --flags 2 --padding_size 4096 --output vbmeta-disabled.img
-```
-
-`--flags 2` is VERIFICATION_DISABLED only. `fastboot --disable-verity
---disable-verification flash vbmeta vbmeta.img` is **not** equivalent: it sets
-flags 3 (HASHTREE_DISABLED | VERIFICATION_DISABLED). Which one a device needs,
-and why flags 3 is preferred for new kits, is in installing.md § vbmeta: flags 2 vs flags 3.
+`avbtool make_vbmeta_image --flags <n>` builds a verification-disabled vbmeta;
+which flags value and why: installing.md § vbmeta: flags 2 vs flags 3.
 `avbtool add_hash_footer` can append an unsigned hash footer to a self-built
 boot.img for footer-expecting tooling — not required once verification is off.
 
@@ -220,8 +212,10 @@ boot.img for footer-expecting tooling — not required once verification is off.
 
 **Purpose:** one-shot validation, on the booted device, that the running kernel
 has every namespace/cgroup option LXC needs — a post-hoc complement to
-`mer_verify_kernel_config` (which checks a config file pre-build). Everything
-except the User namespace should show enabled. Pair with `lxc-ls --fancy` for
+`mer_verify_kernel_config` (which checks a config file pre-build). Expect the IPC
+namespace to show missing where `SYSVIPC` is off (LuneOS does not need it) and
+the User namespace wherever `USER_NS` is off (stock GKI, Q25); the rest should show
+enabled. Pair with `lxc-ls --fancy` for
 container state at a glance (Halium/Droidian docs).
 
 ## parse-android-dynparts (host-side inspection)
@@ -258,22 +252,19 @@ order live in debugging.md (Stages 3–4).
 **Purpose:** enumerate input devices *with capability decoding* (mce-tools):
 `evdev_trace -i`. A device with `EV_FF`/`FF_RUMBLE` is the vibrator; one with
 `SW_HEADPHONE_INSERT`/`SW_MICROPHONE_INSERT` is the jack; touchscreen and keypad
-nodes identify themselves the same way. Use it to fill nyx-modules cmake values
-(`TOUCHPANEL_DEVICE`, keypad node, …) with **measured** event nodes instead of
-copy-pasted ones — the capability-decoding upgrade over the raw `evtest` used on
+nodes identify themselves the same way. Use it before pinning touch or key nodes
+in an adaptation's `deviceinfo` (nyx-modules.md), so the pins are **measured**
+rather than copy-pasted — the capability-decoding upgrade over the raw `evtest` used on
 mindphone (SFOS hadk-faq/hadk-hot).
 
 ## HGABT (halium-generic-adaptation-build-tools)
 
 UBports' standalone kernel/boot-image builder, driven by a `deviceinfo` file —
 entry point `./build.sh -b workdir` (downloads toolchains, clones the kernel
-from deviceinfo vars, builds, packs the boot image). Script inventory:
-`build-kernel.sh`, `make-bootimage.sh`, `make-dtboimage.sh`,
-`build-tarball-mainline.sh`, `build-ufdt-apply-overlay.sh`,
-`setup_repositories.sh`, `prepare-fake-ota.sh`, `fetch-and-prepare-latest-ota.sh`,
-`system-image-from-ota.sh`, plus a `gsi-port-ci.yml` GitLab CI template
+from deviceinfo vars, builds, packs the boot image)
 (https://gitlab.com/ubports/porting/community-ports/halium-generic-adaptation-build-tools).
-The full `deviceinfo` variable reference is in deviceinfo-reference.md.
+Script inventory and the full `deviceinfo` variable reference:
+deviceinfo-reference.md § HGABT script inventory.
 
 ## scp-in-place GSI testing
 
@@ -306,5 +297,7 @@ Self-contained end-user build of the boot image only: repo sync → ACK pin
 modules.bzl trim → kernel-only bazel build → initramfs patch
 (`overlay/init-gki-modules.diff`, reproduces the patched init byte-exact) →
 mkbootimg ×2 (normal + `enable_adb` debug). README documents the KMI-poison
-list, both hardware-diagnosed initramfs bugs, the ARB warning and Tensor/Mali
-status. Ships the KMI tools so users can verify against their own factory image.
+list, the two module-loading init fixes (dependency order, cmdline module
+parameters; boot-images.md § Init patch history), the ARB warning and Tensor/Mali
+status. Also in the repo: `tools/{kmi-crc-check,symvers-drift}.py` and
+`tools/extract-vendor-modules.sh`. Ships the KMI tools so users can verify against their own factory image.

@@ -126,10 +126,10 @@ Absence is informative: if the image demonstrably booted (lk shows the flags) an
 
 ### The debug boot image (`fastboot boot`, no flashing)
 
-Every device kit ships a `boot-<device>-luneos-debug.img`: the same kernel + initramfs with `enable_adb` on the cmdline (construction: boot-images.md § Debug images). With `enable_adb`, init panics into the initramfs adbd debug shell and the device enumerates as **"Halium initrd — Failed to boot"**:
+Every device kit ships a `boot-<device>-luneos-debug.img`: the same kernel + initramfs with `enable_adb` on the cmdline (construction: boot-images.md § Debug images). With `enable_adb`, init panics into the initramfs debug shell and the gadget's product string reads **"Failed to boot"**. The initramfs default is `USB_FUNCTIONS=rndis` (kept minimal: on the MP01 `"adb rndis ecm acm"` made the UDC vanish), so the shell is telnet, not adb, unless the machine overrides it:
 
 ```
-adb shell
+telnet 192.168.2.15  # or `adb shell` where the machine adds adb
 cat /dev/kmsg        # live kernel log, includes every initramfs message
 ```
 
@@ -152,7 +152,7 @@ The Halium-family initramfs exposes a telnet path that works when adb doesn't, a
 - **Reading the silence:** no USB device at all = kernel or initramfs never ran (unpack and inspect the flashed image; on A8–A10 Tier B suspect `skip_initramfs`, 1.6); port 23 answering = kernel + initrd fine, the rootfs transition failed.
 - **Halting boot deliberately:** hybris-boot honours `init_enter_debug`/`init_enter_debug2` marker files and `fastboot boot boot.img -c bootmode=debug`; UBports' recovery flow waits until `echo continue > /init-ctl/stdin`. LuneOS has no halt-boot flag file; `enable_adb` is the analogue.
 
-**LuneOS's own initramfs** starts `telnetd` at **`192.168.2.15` port 23** alongside the adbd gadget on its panic/debug path, with `udhcpd` serving the host `192.168.2.20–90` (no host-side configuration), and announces itself in iSerial (`LuneOS initrd telnet 192.168.2.15: <reason>`). The network function is auto-selected: it tries `rndis.usb0` and `ecm.usb0` and links whichever the kernel supports — **stock GKI 6.1 (bluejay/panther) ships ECM only; MTK 4.14 (mindphone) and athena's 4.19 RNDIS only**. Fixed gadget MACs (`FA:75:7F:BB:F4:E6`/`:E7`, first byte even) avoid the all-zeros-MAC refusal. ECM has no native Windows driver: use a Linux or macOS host on GKI Pixels (adb comes up alongside). All tools are busybox applets already in the initramfs. Two more channels ride along:
+**LuneOS's own initramfs** starts `telnetd` at **`192.168.2.15` port 23** on its panic/debug path, with `udhcpd` serving the host `192.168.2.20–90` (no host-side configuration), and announces itself in iSerial (`LuneOS initrd telnet 192.168.2.15: <reason>`). It creates the functions named in `USB_FUNCTIONS` — default `rndis`; `ecm`, `acm` and `adb` only when a machine lists them — and links whichever the kernel supports. **Stock GKI 6.1 (bluejay/panther) ships ECM only; MTK 4.14 (mindphone) and athena's 4.19 RNDIS only**, so an ECM-only kernel needs `ecm` in `USB_FUNCTIONS`. Fixed gadget MACs (`FA:75:7F:BB:F4:E6`/`:E7`, first byte even) avoid the all-zeros-MAC refusal. ECM has no native Windows driver: use a Linux or macOS host on GKI Pixels (adb comes up alongside). All tools are busybox applets already in the initramfs. Two more channels ride along:
 
 - **ACM serial console** — `acm.usb0` with a shell on `/dev/ttyGS0`; host `screen /dev/ttyACM0 115200`. Needs `CONFIG_USB_CONFIGFS_ACM=y` (stock GKI 6.1 and mindphone's 4.14 have it; athena's defconfig does not, and the function silently doesn't appear).
 - **netconsole** — after the debug network is up, init attaches a dynamic netconsole target streaming kmsg to UDP broadcast port 6666 (`nc -ul 6666` on the host); it **survives switch_root into the full boot**. Init then **replays the early printk buffer** into it (`dmesg` re-injected into `/dev/kmsg`, prefixed `replay:`), since dynamic targets don't get `CON_PRINTBUFFER`; that needs `printk.devkmsg=on`. Requires `CONFIG_NETCONSOLE=y` + `CONFIG_NETCONSOLE_DYNAMIC=y`, which is **never safe on Tier A (KMI-poison) and on Tier B only where no prebuilt vendor network module loads** — NETPOLL/`NET_POLL_CONTROLLER` shift `struct net_device`/`net_device_ops` (kmi-crc-matching.md § NETCONSOLE and NET_POLL_CONTROLLER). The athena and mindphone fragments carry it; mindphone also force-loads the stock WMT modules, so it needs the struct-layout check (kmi-crc-matching.md § Struct layouts) rather than counting as evidence the combination is safe.
@@ -161,7 +161,7 @@ The Halium-family initramfs exposes a telnet path that works when adb doesn't, a
 
 ### The debug gadget is not necessarily adb
 
-`USB_FUNCTIONS="adb rndis ecm acm"` gives whatever the kernel supports, which on a vendor kernel may not include adb: a gadget can come up as ECM + ACM with `adb devices` empty and the device perfectly reachable. Check all of these before concluding the device is dead:
+The gadget carries only the functions `USB_FUNCTIONS` names that the kernel supports, and the default (`rndis`) includes no adb: a gadget can come up as RNDIS, or ECM + ACM, with `adb devices` empty and the device perfectly reachable. Check all of these before concluding the device is dead:
 
 ```sh
 adb devices
@@ -337,7 +337,7 @@ mt6739's vendor rc writes `wait_for_prop hwservicemanager.ready "true"` — quot
 
 ### 2.3 Container init dies with no trace
 
-Inside the LXC container init often has no usable `/dev/kmsg`, so KernelLogger discards every line; init is built with `REBOOT_BOOTLOADER_ON_PANIC`, so a fatal signal becomes a handled `reboot()` that a pid namespace delivers as SIGHUP. All the container manager says is `Child <pid> ended on signal Hangup(1)`. Two AOSP init patches (the halium16 init-logging patches, tools.md) close the hole: **tee every log line to `/dev/socket/init.log`** (bind-mounted from the host, so it outlives the container) and **breadcrumbs before `InitKernelLogging`** at `FirstStageMain` entry and after `/dev` setup. That is how the Android 16 GSI's PropertyInit failure was found: `prop_area::map_prop_area_rw` with the host's **4M `/dev` tmpfs out of pages** while mapping one 128K `prop_area` per property context (~557 on a 16 GSI).
+Inside the LXC container init often has no usable `/dev/kmsg`, so KernelLogger discards every line; init is built with `REBOOT_BOOTLOADER_ON_PANIC`, so a fatal signal becomes a handled `reboot()` that a pid namespace delivers as SIGHUP. All the container manager says is `Child <pid> ended on signal Hangup(1)`. Two AOSP init patches (the halium-16 init-logging patches) close the hole: **tee every log line to `/dev/socket/init.log`** (bind-mounted from the host, so it outlives the container) and **breadcrumbs before `InitKernelLogging`** at `FirstStageMain` entry and after `/dev` setup. That is how the Android 16 GSI's PropertyInit failure was found: `prop_area::map_prop_area_rw` with the host's **4M `/dev` tmpfs out of pages** while mapping one 128K `prop_area` per property context (~557 on a 16 GSI).
 
 ### 2.4 Read the container's logcat, not just journalctl — the ashmem case
 
@@ -532,8 +532,8 @@ Look up what gates that command in `hci_core.c` (`hci_init*_req`) and mask the b
 
 1. **A bypassed vendor helper daemon busy-spins.** tissot's `wcnss_filter` sat at 96% of a core logging ~62,000 lines/s (and `logd` another 36% absorbing it): libbt-vendor `ctl.start`s the filter, but LuneOS reaches BT via bluebinder/vhci and never uses it, so its SoC open fails and `handle_soc_events()` spins on a dead fd. BT works fully without it. Fix shape: stop it plus a periodic guard (it gets `ctl.start`ed again on some BT power-on paths — recipe `tissot-wcnss-filter-fixup`, 30 s guard). Sort processes by cumulative CPU and measure the container log rate on every "working" port.
 2. **Zero-interval GTimerSource spin.** A `GTimerSource` with `interval_ms == 0` expires the instant it is dispatched and re-arms without reaching poll: `sleepd` at 25% of a core, ~40,000 wakeups/s (fixed in sleepd `herrie/fix-zero-interval-timer`). Signature: a constant fraction of a core, enormous wakeup count, no I/O.
-3. **pulseaudio pinned by an uncorked stream.** A GStreamer pipeline left PLAYING after EOS (the Qt 6 EOS bug, device-sargo.md) keeps an uncorked sink input, so `module-suspend-on-idle` never suspends the sink. Diagnose with `pactl list sink-inputs` (`Corked: no` long after the sound ended); prove the cost with `pactl suspend-sink <sink> 1`.
-4. **Kernel debug spam wears flash.** sargo's `qpnp_smb2` ships `debug_mask=31`, nearly doubling idle writes (0.19 vs 0.10 GB/h). Silence it via module parameters in a `tmpfiles.d` rule — **not** via the device-config sparse overlay, which has no ordering against `systemd-tmpfiles-setup.service`.
+3. **pulseaudio pinned by an uncorked stream.** A GStreamer pipeline left PLAYING after EOS keeps an uncorked sink input, so `module-suspend-on-idle` never suspends the sink. Diagnose with `pactl list sink-inputs` (`Corked: no` long after the sound ended); prove the cost with `pactl suspend-sink <sink> 1`. (The Qt 6 EOS case and its numbers: device-sargo.md § Idle health.)
+4. **Kernel debug spam wears flash.** A driver shipping a verbose `debug_mask` can nearly double idle writes (sargo's `qpnp_smb2`; device-sargo.md § Idle health). Silence it via module parameters in a `tmpfiles.d` rule — **not** via the device-config sparse overlay, which has no ordering against `systemd-tmpfiles-setup.service`.
 
 ## Symptom → likely cause → where to look
 
@@ -550,7 +550,7 @@ Look up what gates that command in `hci_core.c` (`hci_init*_req`) and mask the b
 | Repacked image flashes fine, our init never executes | `skip_initramfs` honoured by the vendor kernel | 1.6 |
 | Device enumerates but `adb devices` is empty | Gadget came up as ECM/ACM/RNDIS without adb | Debug channels: try ACM/telnet |
 | No adb on the normal image; log shows two names written to `UDC` | Two UDCs (`dummy_udc.0`), unparsed `ls /sys/class/udc` | `first_real_udc()` |
-| USB gadget "Halium initrd — Failed to boot" | initramfs couldn't finish (often rootfs.img not found) | `adb shell`, `cat /dev/kmsg` |
+| USB gadget "Failed to boot" | initramfs couldn't finish (often rootfs.img not found) | telnet `192.168.2.15` (or `adb shell`), `cat /dev/kmsg` |
 | "luneos initramfs failed:" with empty reason | Debug mode entry, not a failure | next kmsg line |
 | Debug image bootloops on MediaTek | Watchdog kills the shell before modules load | 1.9 |
 | Debug image never shows the userspace bug | It cannot boot past the initramfs | boot normal, then read its journal |

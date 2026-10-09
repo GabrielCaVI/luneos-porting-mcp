@@ -15,7 +15,7 @@ LuneOS talks to Android vendor HALs through the Mer/Sailfish-lineage glue stack 
 | Sensors | `sensorfw` + `qtsensors-sensorfw-plugin` | working on HIDL; sensorfwd has an AIDL backend, not yet working on any port (surya: retest after the gbinder ApiLevel fix) |
 | GPS | geoclue bbappend → add `geoclue-providers-hybris` | to add |
 | Camera / HW video | `droidmedia` + `gst-droid` | replaces `qtubuntu-camera` (UT-era, dead); also gives HW decode to the webruntime |
-| Vibrator/LED/deviceinfo | `nyx-modules-hybris` | see nyx-modules notes; haptics needs legacy API (headers <11) |
+| Vibrator/LED/deviceinfo | `nyx-modules-hybris` | device info (and GPS); haptics comes from `nyx-modules` on halium (nyx-modules.md § When to flip a module back to the OW implementation) |
 | MTP | `mtp-server` | present |
 | Android apps | waydroid recipes | present; rides the same GSI/GKI base |
 | Android-isms | initrd hacks today; evaluate Halium's `mechanicd` | open |
@@ -66,15 +66,15 @@ every other A12+ GSI.
   Jolla C2) with A12/A13 blobs.
 - **Unproven: big-Valhall G77/G78/G710** (Exynos 2100/2200, Tensor). Nobody has run
   libhybris on a Tensor device — LuneOS would be first.
-- **Patch set to carry from day one.** Audited against `Herrie82/libhybris`
-  `herrie/android16-tls` @ `032a289a` on 15 Sep 2026 (MP01 bring-up):
+- **Patch set to carry from day one.** State of `Herrie82/libhybris`
+  `herrie/android16-tls` @ `032a289a`:
   - PR #543 / #575 — TLS workaround for A12+ Mali blobs. **NOT in the fork.**
     Still open upstream; Ubuntu Touch, Sailfish, Droidian and FuriLabs ship it.
     Carried in-layer as meta-android `libhybris/0007-hooks-hook-MEOW_get_tls_meow_offset-*.patch`.
   - PR #601 — queueBuffer skip → tearing fix. **Already merged** (`9928c40`).
   - PR #594 + qt5-qpa-hwcomposer-plugin PR #104 — present-fence / buffer-slot.
     libhybris side **already merged** (`f6202e9`); the qt5-qpa side still needs checking.
-  - FuriLabs 4a42d42 — WaylandNativeWindow buffer-thrash crash. Not audited yet.
+  - FuriLabs 4a42d42 — WaylandNativeWindow buffer-thrash crash. Not audited.
 
 - **`--enable-mali-quirks` was OFF for every halium machine**, which is the trap:
   the Mali quirk code is all inside `#ifdef MALI_QUIRKS`, and `configure.ac`
@@ -99,17 +99,9 @@ every other A12+ GSI.
 
 ## Derive, don't ship: the start-android-hals mechanism
 
-Four sargo problems were each solved by reading the vendor's own configuration at runtime
-instead of shipping a per-device file:
-
-| Problem | Naive fix | What LuneOS does instead |
-|---|---|---|
-| 33 vendor HALs never start | per-device service list | parse `service`/`class` out of the container's own rc files |
-| init blocked forever | hardcode `vendor.qcom.time.set` | parse every `wait_for_prop` gate from the rc files, grace-period, force stragglers |
-| 50 EACCES on vendor sysfs | per-device chown list | replay `chown`/`chmod` from the init triggers that were never reached |
-| compositor races the HAL | per-device sleep | wait for `IComposer` to actually register on hwbinder |
-
-The diagnostics behind the first two rows — init blocked by a `wait_for_prop` gate, and the
+`start-android-hals.sh` implements the derivations in architecture.md § The adaptation
+tier model (HAL services, `wait_for_prop` gates, `chown`/`chmod` replay, waiting for
+`IComposer`). The diagnostics behind the first two derivations — init blocked by a `wait_for_prop` gate, and the
 quoted-property trap that wedged every HIDL `getService` — are in debugging.md § 2.1 and § 2.2.
 
 **Skip lists come from the device's own adaptation.** `start-android-hals.sh` once sourced
@@ -154,34 +146,11 @@ a vendor that is working perfectly. **Before concluding that, confirm libgbinder
 speaks the vendor's servicemanager protocol** (next subsection): a wrong
 `ApiLevel` produces the same symptoms against AIDL HALs that do exist.
 
-On athena, with the LineageOS 22 vendor:
-
-```
-servicemanager: Found android.hardware.biometrics.fingerprint.IFingerprint/default …
-init: Could not ctl.start 'fps_hal' … fingerprint@2.1-service: No such file
-biomd: Failed to get fingerprint remote service
-biomd: Failed to initialize HIDL fingerprint backend
-```
-
-The HAL is alive; `biomd` has no AIDL backend. Everything LuneOS asks for by
-HIDL name is absent in that boot:
-
-```
-android.hardware.biometrics.fingerprint@2.1::IBiometricsFingerprint/default
-android.hardware.sensors@2.0::ISensors/default    (and @2.1, and the AIDL name)
-android.hardware.graphics.composer@2.2/2.3/2.4::IComposer/default
-android.hardware.radio.config@1.2::IRadioConfig/default
-```
-
-while the vendor publishes, on AIDL: `biometrics.fingerprint`, `nfc`, `wifi`,
-`wifi.supplicant`, `wifi.hostapd`, `power`, `vibrator`, `light`, `health`,
-`usb`, `usb.gadget`, `memtrack`, `media.c2`.
-
-That boot ran libgbinder on the API 31 preset against this A15 vendor (see "The
-build-time setting" below), so fingerprint, NFC and sensors sharing one cause
-is **unverified**: retest each at the correct `ApiLevel`. What stands
-independently of the protocol is that a HIDL-only daemon such as `biomd` cannot
-use a HAL the vendor only publishes on AIDL.
+The tell: `servicemanager` logs the AIDL HAL as found while the LuneOS daemon reports
+its HIDL backend failing (`biomd: Failed to initialize HIDL fingerprint backend`). A
+HIDL-only daemon cannot use a HAL the vendor only publishes on AIDL, whatever the
+protocol preset. Found on athena with the LineageOS 22 vendor; the HAL lists and logs
+are in device-athena.md § Vendor and GSI.
 
 ### Before blaming AIDL: is libgbinder even speaking the right protocol?
 
@@ -372,7 +341,7 @@ also waits for `CONNINFRA_IOCTL_DO_MODULE_INIT` before any sub-driver comes up.
 - **The modules live in `vendor_dlkm`, not `vendor`.** All three units' conditions
   only checked `/android/vendor/lib/modules`, so on the MP01 every unit was skipped
   with "no trigger condition checks were met". They now also check
-  `/android/vendor_dlkm/lib/modules` (`meta-smartphone` `8fd74686`).
+  `/android/vendor_dlkm/lib/modules` (`meta-smartphone` `9d68df46`).
 - **Load order matters: WiFi and BT modules loaded together in the wrong order
   corrupt the DMASHDL queues the two share** (`RST_FW_DL_FAIL` every ~6 s, forever).
   Follow the vendor's two-stage `init.*.rc` order (`wmt_drv` + `connfem` on boot,
@@ -453,17 +422,9 @@ Found on sm-t220 (see device-sm-t220.md): the MediaTek/Samsung `libaudio_param_p
 (`appGetXmlDirFromProperty`) builds `/vendor/etc/audio_param_huaqin/NA` this way.
 The HAL then cannot open its `AudioParamOptions.xml`, logs
 `MTK_AUDIO_NUMBER_OF_MIC undefined in AudioParamOptions`, and every feature option
-reads as undefined. The speaker amplifiers are chosen from one of those options:
-
-| `MTK_AUDIO_SPEAKER_PATH` | `setNonSmartPAType()` | What the HAL then switches on |
-|---|---|---|
-| `int_spk_amp` | 0 (also the fallback) | `speaker_output` only: the codec's own line-out |
-| `int_lo_buf` | 1 | line-out buffer plus `ext_speaker_output` |
-| `int_hp_buf` | 2 | the `aw_speaker_l/r_output` paths: external Awinic AW87xxx amps |
-| `2_in_1_spk` / `3_in_1_spk` | 3 / 4 | dual / triple speaker variants |
-
-so with the options unreadable you get the fallback, the amps stay off, and the
-speakers are silent while the headphone path (a different, internal route) works.
+reads as undefined — including the one that selects the speaker amplifiers, so the
+amps stay off and the speakers are silent while the headphone path works (the
+`MTK_AUDIO_SPEAKER_PATH` mapping is in device-sm-t220.md § Subsystem notes).
 
 How to recognise it: the HAL's own log line above; `Ext_Speaker_Amp_Switch` and the
 vendor amp's profile control staying `Off` during real playback; and, decisively,
@@ -655,9 +616,9 @@ with "Failed to create wl_display" → every QML app defunct. The bridge is a
 **Durable fix: `wayland-xdg-link.service`** — a tiny always-on watcher (`Type=simple`,
 `Restart=always`) that re-links every 2 s. Deliberately **not** a systemd `.path` unit:
 `PathExists` stays true, so a oneshot re-triggers in a loop and hits the start limit.
-Verified: symlink removed → restored in <3 s; compositor restart → Phone launches. Once
-this ships in the layer, the per-service `XDG_RUNTIME_DIR` env files for
-webapp-mgr/maliit become redundant.
+Verified: symlink removed → restored in <3 s; compositor restart → Phone launches. The
+watcher is not in meta-luneos, so the per-service `XDG_RUNTIME_DIR` env files for
+webapp-mgr/maliit are still what the layer ships; they become redundant once it is.
 
 ## Browser (Atlas) UI scaling
 

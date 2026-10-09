@@ -73,10 +73,9 @@ All from the vendor's own SP Flash Tool package (`Z10_20251226_user_smr6.zip`, b
   `vermagic.cfg` sets `CONFIG_LOCALVERSION="-android12-9-gdeb4d30d3489"` with
   `LOCALVERSION_AUTO` off and an empty `.scmversion` (kmi-crc-matching.md § Step 0 —
   ask the modules, they know).
-- **KMI:** 0 of 345 stock modules would fail. Poison list as on the Q25: `USER_NS`
-  and `IPC_NS` stay off, `PID_NS` and `CHECKPOINT_RESTORE` are clean. The recipe's
-  `luneos.cfg` still sets `CONFIG_SYSVIPC=y`, kept CRC-neutral by a `task_struct`
-  ABI-padding commit on the branch; LuneOS does not need it.
+- **KMI:** 0 of 345 stock modules would fail. As on the Q25, `USER_NS` stays off
+  (device-q25.md § Kernel) and `IPC_NS` is off; `PID_NS` and `CHECKPOINT_RESTORE`
+  are clean.
 - **ThinLTO:** stock `CONFIG_LTO_CLANG_FULL=y` makes `ld.lld -r -o vmlinux.o` run
   single-threaded (93.6% of one core on a 64-thread host, ~20 min);
   `KERNEL_LTO_THIN = "1"` in mp01.conf drops it to 6m04s and is KMI-neutral
@@ -248,7 +247,7 @@ daylight needs less light, not more. lk lights the frontlight fully for its logo
 | Sound card never registers | `mt6789-mt6366` defers (`snd_soc_register_card fail -517`) until `mtk-btcvsd` (component `mtk-btcvsd-snd`) loads; found via `/sys/kernel/debug/devices_deferred`, `asoc/components` and the machine node's phandles in a pulled `/proc/device-tree` | load `mtk-btcvsd` (hal-userspace.md § Audio) |
 | pulseaudio crash | vendor `libnvram.so` needs VNDK 31 `libbase` (`android::base::Basename`) | `deviceinfo_hybris_prefer_vndk="1"`, proven first with `systemctl set-environment HYBRIS_PREFER_VNDK=1` |
 | Audio slightly off | HAL DL paths at 48 kHz | `deviceinfo_audio_sample_rate="48000"` |
-| No WiFi/BT modules | `mtk-connectivity` conditions only checked `vendor` | `8fd74686` |
+| No WiFi/BT modules | `mtk-connectivity` conditions only checked `vendor` | `9d68df46` |
 | BT dead | wrong HAL name, bad restart order, Synchronization Train over-reported | `mtk-bt-bringup.sh`, `deviceinfo_bluebinder_ext_features_page_2_mask="0x0400000000000000"` |
 | NFC stops | Waydroid's container start runs `systemctl stop nfcd` | waydroid patch 0010 |
 | Waydroid "container failed to start" | `lxc_spawn: ... Failed to clone a new set of namespaces` — no `IPC_NS`/`USER_NS`, Waydroid's LXC config asked for them | `waydroid-luneos-prepare` adds `lxc.namespace.keep` for whichever is missing from `/proc/self/ns` |
@@ -263,7 +262,27 @@ daylight needs less light, not more. lk lights the frontlight fully for its logo
 anything visibly broken. `libsndcardparser.so not found` from the vendor
 `libtinycompress.so` is harmless.
 
-### Debugging this device
+## Open issues
+
+- **Battery percentage:** the kernel gauge (`mtk_battery.c`) is fine; the userspace
+  algorithm rejects the nvram calibration. Compare with what stock Android reads
+  from the same record.
+- **Fingerprint:** `mp01.conf` declares it (owner confirmed the reader works), while
+  `stubbed-services-mp01` stubs both HALs for suspend; whichever is out of date has
+  to be fixed. Needs a working TEE supplicant.
+- **WiFi power-on race** with `wmt_launcher` (hal-userspace.md § MediaTek
+  connectivity).
+- **Web apps cropped in portrait** (548x600 of a 600x657 card). Compositor side
+  measured consistent (buffer, destination, source and item all 600x657); Chromium
+  reports `screen` as unrotated 800x600 `landscape-primary`. Look at the web
+  runtime's Wayland output handling (`wayland_output.cc`
+  `panel_transform`/`logical_transform`). Method: debugging.md § Stage 3.
+- **E Ink polish:** remaining shell animations worth making instant, a Home-press
+  full refresh like stock's, per-app modes.
+- `luneos.cfg` still sets `CONFIG_SYSVIPC=y`; LuneOS does not need it — drop it from
+  the layer.
+
+## Device-specific traps
 
 - **`expdb` is the way in** (`dump-expdb.sh` in the port's tool directory wraps
   mtkclient; debugging.md § MediaTek: `expdb` when there is no pstore and no
@@ -307,24 +326,6 @@ anything visibly broken. `libsndcardparser.so not found` from the vendor
   (`get_charger_charging_current: ... failed: -95`); a long session flattens it.
 - Several bootloops followed heredoc writes over `adb shell` while pushed files
   behaved — a correlation only; prefer `adb push`.
-
-## Open issues
-
-- **Battery percentage:** the kernel gauge (`mtk_battery.c`) is fine; the userspace
-  algorithm rejects the nvram calibration. Compare with what stock Android reads
-  from the same record.
-- **Fingerprint:** `mp01.conf` declares it (owner confirmed the reader works), while
-  `stubbed-services-mp01` stubs both HALs for suspend; whichever is out of date has
-  to be fixed. Needs a working TEE supplicant.
-- **WiFi power-on race** with `wmt_launcher` (hal-userspace.md § MediaTek
-  connectivity).
-- **Web apps cropped in portrait** (548x600 of a 600x657 card). Compositor side
-  measured consistent (buffer, destination, source and item all 600x657); Chromium
-  reports `screen` as unrotated 800x600 `landscape-primary`. Look at the web
-  runtime's Wayland output handling (`wayland_output.cc`
-  `panel_transform`/`logical_transform`). Method: debugging.md § Stage 3.
-- **E Ink polish:** remaining shell animations worth making instant, a Home-press
-  full refresh like stock's, per-app modes.
 
 ## Sources
 

@@ -61,8 +61,7 @@ you need to match at all).
 
 - Config: `mer_verify_kernel_config` gives 8 errors / 54 warnings on stock /e/OS
   (IKCONFIG) and **1 / 29** on `surya_defconfig` + `luneos.cfg`; the remaining
-  error is `CONFIG_DUMMY=y`, kept at the stock Android value. `CONFIG_SYSVIPC` is
-  off (not needed). `IKHEADERS` and `KALLSYMS_ALL` are off as size levers (3.6 MB
+  error is `CONFIG_DUMMY=y`, kept at the stock Android value. `IKHEADERS` and `KALLSYMS_ALL` are off as size levers (3.6 MB
   together). `NETCONSOLE` + `NETCONSOLE_DYNAMIC` are on and the cmdline carries
   `printk.devkmsg=on`: there is no accessible debug UART, so netconsole over the
   USB gadget and the initramfs adb shell are the early-boot channels. That is safe

@@ -23,8 +23,8 @@ adb reboot bootloader        # or the device's key combo
 avbtool make_vbmeta_image --flags 2 --padding_size 4096 --output vbmeta-disabled.img
 ```
 
-sets flags 2, VERIFICATION_DISABLED only; it is what the mindphone kit ships, and it
-boots. `fastboot --disable-verity --disable-verification flash vbmeta vbmeta.img` is
+sets flags 2, VERIFICATION_DISABLED only. Flags 2 boots: the mindphone kit ships its
+stock vbmeta with the flags word set to 2 (sm-t220 likewise). `fastboot --disable-verity --disable-verification flash vbmeta vbmeta.img` is
 **not** equivalent: it sets flags 3 (HASHTREE_DISABLED | VERIFICATION_DISABLED), as the
 radon and surya vbmeta images do. Prefer flags 3 (`--flags 3`, or the two fastboot
 switches) for new kits. An empty unsigned AVB image (256-byte header, `algorithm_type 0`,
@@ -163,6 +163,7 @@ match the factory image you analysed to what is on the device, and redo the anal
 device is on a newer build. Device specifics: device-bluejay.md § Install,
 device-panther.md § Install.
 
-## Installer end state (not yet built)
+## Installer design (luneos-installer)
 
+No installer exists; kits are flashed with their own `install.sh`. The intended
 `luneos-installer` (Python, host-side): detect the device (`fastboot getvar product`, `ro.product.device`, `ro.vndk.version` or `ro.vendor.build.version.sdk` — `ro.board.api_level` is a YYYYMM date on A15+ vendors — `ro.boot.slot_suffix`, boot header version from the stock boot.img) → look up `devices/<codename>/deviceinfo`; unknown devices get "generic GKI" mode (pull the stock boot/init_boot off the device, repack with the LuneOS initramfs, warn loudly) → download universal `rootfs.img`, `system-gsi-<vndk>.img`, boot images → flash vbmeta/boot/init_boot, format userdata unencrypted, push the two images → reboot.

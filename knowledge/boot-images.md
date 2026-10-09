@@ -278,11 +278,12 @@ fallback, warn to kmsg if neither yields a size.
 
 ### Debug images
 
-Same image + cmdline `enable_adb` → init panics into the initramfs adbd debug
-shell. On Pixels, `fastboot boot boot-<dev>-luneos-debug.img` runs it without
-flashing — that is the push/rescue channel. If boot hangs on any halium device,
-the initramfs panics into an adb gadget named "Halium initrd — Failed to boot";
-`adb shell` then and read `/dev/kmsg`.
+Same image + cmdline `enable_adb` → init panics into the initramfs debug shell. On
+Pixels, `fastboot boot boot-<dev>-luneos-debug.img` runs it without flashing — that is
+the push/rescue channel. If boot fails on any halium device, the initramfs drops to the
+same shell behind a USB gadget named "Failed to boot"; with the default
+`USB_FUNCTIONS=rndis` that is telnet on `192.168.2.15`, adb only where the machine adds
+it (debugging.md § Debug channels).
 
 - MediaTek lk often does not implement `fastboot boot`; there the debug image has to be
   flashed (mp01), and devices with no fastboot at all take it through their flash tool.
@@ -323,11 +324,8 @@ in debugging.md.
   fixes the "userdata image with only rootfs.img in it does not boot"
   case the flashed-userdata install relies on. Build the initramfs from bitbake to
   get all of them: `MACHINE=<machine> bitbake initramfs-android-image`.
-- **`luneos-bootimg-bluejay`** build repo (github.com/Herrie82/luneos-bootimg-bluejay): self-contained
-  end-user build of the boot image only — `build-bootimg.sh` (repo sync → ACK
-  pin → fragment → modules.bzl trim → kernel-only bazel build → initramfs patch
-  → mkbootimg ×2), `luneos_defconfig`, `overlay/init-gki-modules.diff`,
-  `tools/{kmi-crc-check,symvers-drift}.py`, `tools/module-order.py`,
-  `tools/extract-vendor-modules.sh`.
+- **`luneos-bootimg-bluejay`** build repo (github.com/Herrie82/luneos-bootimg-bluejay):
+  the self-contained hand build of the bluejay boot image, carrying the init patch as
+  `overlay/init-gki-modules.diff`; contents: tools.md § build-bootimg.sh.
 - **Yocto**: kernel and boot images from bitbake, the writer and the recipes —
   device-bringup-yocto.md § GKI device machines.

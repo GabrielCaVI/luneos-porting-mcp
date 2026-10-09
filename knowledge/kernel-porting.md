@@ -60,9 +60,11 @@ options). Userland consequences of the android14-6.1 list:
 
 - No fanotify (systemd is fine without it).
 - No VRF/l3mdev (ofono is fine).
-- **LXC must not unshare the IPC namespace** (`IPC_NS` is off; `PID_NS` is
-  available), nor the user namespace where `USER_NS` is off (stock GKI, Q25):
-  `lxc.namespace.keep = ipc user`.
+
+Independently of any poison list, **LXC must not unshare the IPC namespace**:
+`SYSVIPC` is off, so `IPC_NS` is too. Nor the user namespace where `USER_NS` is off
+(stock GKI, Q25). `PID_NS` is available. The shipped config carries
+`lxc.namespace.keep = ipc user`.
 
 ### Fragment traps
 
@@ -157,9 +159,18 @@ Two routes produce the same kernel:
     //aosp:kernel_aarch64
   ```
 
-A 5.10 tree has kbuild gotchas a 6.1 one does not (`CROSS_COMPILE` for clang's
-target triple, `LLVM_IAS=1`, `PYTHON=python3`); see device-q25.md § 5.10 kbuild
-gotchas.
+### 5.10 kbuild gotchas
+
+A 5.10 tree built with clang has traps a 6.1 one does not; expect them on any 5.10
+port, each costs a build cycle (found on the Q25; see device-q25.md):
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `register 'sp' unsuitable for global register variables on this target` in `asm-offsets.c` | 5.10 derives clang's `--target` from `CROSS_COMPILE`; `LLVM=1` alone does not imply one (6.1 works it out from `ARCH`), so clang built for the x86_64 host | `CROSS_COMPILE=aarch64-linux-gnu-` — only the triple is used |
+| wants an external assembler | 5.10 defaults to `-fno-integrated-as` | `LLVM_IAS=1` |
+| `link-vmlinux.sh: python: not found` after a full compile | 5.10 spells `PYTHON` as `python` and calls `scripts/jobserver-exec` | `PYTHON=python3` (Droidian's CI symlinks `python`→`python2`, host-wide and the wrong interpreter) |
+
+Plus `CROSS_COMPILE_COMPAT=arm-linux-gnueabi-` wherever `CONFIG_COMPAT_VDSO=y`.
 
 ### Vendor-hook modules and the ACK tag
 
@@ -486,7 +497,7 @@ check each on any pre-4.x Tier B port.
 ## The kernel command line
 
 - **Bootloaders mangle it.** sargo's bootloader drops arguments it does not
-  recognise (measured with a `zz.marker=1` canary; device-sunfish.md), and
+  recognise (measured with a `zz.marker=1` canary; device-sargo.md), and
   MediaTek's G99 lk drops the first 20 characters of the boot image command line
   (device-q25.md). Anything LuneOS needs goes in `CONFIG_CMDLINE`, not the boot
   image header.
@@ -497,7 +508,8 @@ check each on any pre-4.x Tier B port.
 - **`cgroup_disable=net_prio`** breaks a boot- and shutdown-time deadlock wherever
   LXC + connman run on a MediaTek `ccmni` modem: `net_prio`'s `cgrp_css_online()`
   takes rtnl under cgroup_mutex while connmand holds rtnl waiting on an events
-  work item whose kworkers wait on cgroup_mutex (device-q25.md).
+  work item whose kworkers wait on cgroup_mutex (measured on the MP01; see
+  device-mp01.md).
 - **Never put `netconsole=` on the cmdline of a configfs-gadget kernel**: a
   target whose device does not exist at init makes `init_netconsole()` unwind
   entirely, taking the dynamic configfs interface down with it (verified in the
@@ -506,7 +518,8 @@ check each on any pre-4.x Tier B port.
 
 ### selinux=0: do not pass it on a Halium port
 
-The fleet convention is `androidboot.selinux=permissive` and nothing else. That is
+The rule is `androidboot.selinux=permissive` and nothing else (the Q25's
+`CONFIG_CMDLINE` still carries `selinux=0`; an open issue in device-q25.md). That is
 an **Android-init property, not a kernel parameter** — the kernel ignores it, and
 the kernel's own SELinux stays enabled. Two reasons:
 

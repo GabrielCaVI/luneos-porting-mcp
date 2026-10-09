@@ -23,16 +23,6 @@ and the stock factory images.
 | Boot image | built (host) | header v3, 37,679,104 B |
 | Boot, display, touch, wifi, BT, modem, audio, sensors, camera, NFC, fingerprint, charging | untested | never flashed |
 
-First checks on hardware (the first line decides whether it boots):
-
-```sh
-dmesg | grep -iE 'disagrees about version|Unknown symbol'   # expect nothing
-dmesg | grep -i "installed .* of our own kernel modules"    # the swap
-lsmod | wc -l                                              # expect ~221
-dmesg | grep -iE 'ufs|scsi 0'                               # storage came up
-journalctl -b | grep -i "gbinder ApiLevel"                  # expect 36
-```
-
 ## Platform facts
 
 | Fact | Value | Source |
@@ -69,9 +59,9 @@ journalctl -b | grep -i "gbinder ApiLevel"                  # expect 36
   The recipe follows `linux-zinwa-q25` (own configure/compile with the prebuilt
   Clang, no kernel.bbclass), so it does not provide `virtual/kernel`
   (`linux-dummy`). Set `GKI_CLANG_DIR:bramble`.
-- **Config delta:** deliberately smaller than sunfish's — it leaves out `IPC_NS`,
-  `FANOTIFY` and `NET_L3_MASTER_DEV` (bluejay's KMI-poison list, kept as caution);
-  `CONFIG_SYSVIPC` is off (not needed). Measured 22 Sep 2026: the whole delta
+- **Config delta:** deliberately smaller than sunfish's — it leaves out `FANOTIFY`
+  and `NET_L3_MASTER_DEV` (bluejay's KMI-poison list, kept as caution). Measured: the
+  whole delta
   scores 0 of 218 stock modules failing, the same as the stock-config baseline, so
   nothing in it poisons this KMI. `CONFIG_MODULE_FORCE_LOAD=y` is a bisecting
   escape hatch only — forcing a module whose layouts moved corrupts memory, and here
@@ -108,8 +98,10 @@ Header **v3**, kernel `Image.lz4` + the Halium initramfs, no dtb section (the de
 tree stays in `vendor_boot`), `ANDROID_BOOTIMG_CMDLINE = ""` (the real cmdline is
 vendor_boot's), `ANDROID_BOOTIMG_OS_VERSION = "0x1c00017b"` (Android 14 /
 2023-11), no `init_boot`. Built by `luneos-bootimg-gki` with
-`GKI_KERNEL_PROVIDER = "linux-google-bramble"` — the bluejay/panther class
-(boot-images.md § Class 2 — A12-launch GKI (ramdisk in `boot`)). Kit image
+`GKI_KERNEL_PROVIDER = "linux-google-bramble"`, the recipe bluejay and panther use.
+The layout is A11-launch header v3: unlike boot-images.md § Class 2 — A12-launch GKI
+(ramdisk in `boot`), the stock `boot` already carries the generic ramdisk, and the
+merge with `vendor_boot`'s ramdisk works the same way. Kit image
 37,679,104 B, 37% of the 100 MB partition.
 
 ## Vendor and GSI
@@ -162,7 +154,16 @@ need not be installed. `boot` is recovery on this A/B device: keep the stock
 
 ## Open issues
 
-- **It has never booted.** Every result above is host-side.
+- **It has never booted.** Every result above is host-side. First checks on hardware
+  (the first line decides whether it boots):
+
+  ```sh
+  dmesg | grep -iE 'disagrees about version|Unknown symbol'   # expect nothing
+  dmesg | grep -i "installed .* of our own kernel modules"    # the swap
+  lsmod | wc -l                                              # expect ~221
+  dmesg | grep -iE 'ufs|scsi 0'                               # storage came up
+  journalctl -b | grep -i "gbinder ApiLevel"                  # expect 36
+  ```
 - **Key devices and DPI are guessed:** `adaptations/bramble/deviceinfo` pins
   `qpnp_pon;gpio-keys` and 413 ppi from geometry; `device_pixel_ratio` is unset
   (sargo's 2.4 is the first value to try).

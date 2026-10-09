@@ -230,9 +230,10 @@ in an early bluejay kit; see device-bluejay.md).
 
 Fix: `# CONFIG_MODULE_SIG_PROTECT is not set`, while `MODULE_SIG`/`MODULE_SIG_ALL`
 stay `=y`; `internal.h` stubs both helpers when the option is off, so no source
-patch is needed. Measured KMI-clean on bluejay: 203/203 factory modules load, 0
-CRC mismatches, and the option confirmed off by reading the built kernel's
-IKCONFIG back.
+patch is needed. Measured KMI-clean on bluejay, host-side: 203/203 factory modules
+load-compatible, 0 CRC mismatches, and the option confirmed off by reading the built
+kernel's IKCONFIG back. Whether it brings Wi-Fi/BT up on the phone is unrecorded
+(device-bluejay.md).
 
 ---
 
@@ -481,10 +482,11 @@ the only two poisoners there.
 
 **`FANOTIFY`: nothing appears to need it. Removable, pending one control test.**
 
-- bluejay, panther and tangorpro boot the *same* halium-arm64 rootfs
-  with `# CONFIG_FANOTIFY is not set` — meta-android's shared GKI fragment already
-  lists it as KMI-poison and leaves it out. Same systemd build, no fallout. This is
-  the strongest evidence available and it costs nothing to look up.
+- bluejay boots the *same* halium-arm64 rootfs on a kernel with
+  `# CONFIG_FANOTIFY is not set` — meta-android's shared GKI fragment lists it as
+  KMI-poison and leaves it out (panther and tangorpro carry the same fragment but
+  have not been booted). Same systemd build, no fallout seen. This is the strongest
+  evidence available and it costs nothing to look up.
 - Scanning every regular file in the shipped rootfs for `fanotify` finds only
   syscall *name tables*: `strace`, the valgrind tools, gdb's `syscalls/*.xml`,
   `libseccomp`, `enosys`, perfetto's trace processor, and glibc's own wrapper.
@@ -504,7 +506,7 @@ It was in sunfish's fragment under a "systemd's mount/automount machinery" comme
 — an assumption inherited from that checker, never a measurement, and the most
 expensive one in the file.
 
-**Open:** the GKI devices prove systemd *starts* without fanotify, not that a
+**Open:** bluejay shows systemd *starts* without fanotify, not that a
 full LuneOS stack is unaffected; the control test on sargo
 (`LUNEOS_TEST_NO_FANOTIFY=1` in `linux-google-sargo`, or counting live fanotify
 fds on a booted device) has no recorded result, and sunfish keeps

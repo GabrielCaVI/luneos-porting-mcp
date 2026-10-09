@@ -105,7 +105,7 @@ module, `printk` included).
   and NET_POLL_CONTROLLER).
 - **Instrumenting the initramfs to find that panic.** Five flash rounds showed nothing,
   because the panic came after switch_root. Reading ramoops out of DRAM found it in one read
-  (Debugging below).
+  (Device-specific traps).
 
 ## Boot image
 
@@ -183,25 +183,6 @@ Fastboot (bootloader must be unlocked). Kit: `boot-titanpocket-luneos.img`,
 
 ## Subsystem notes
 
-### Debugging this device
-
-Nothing enumerates on USB when it bootloops, there is no pstore console to read afterwards,
-and expdb's kedump region came back as zeros (twice) while lk's own log showed `lk boot
-reason = 4` (`kernel_panic`, `exp_type 0x2`). What worked (method: debugging.md § MediaTek:
-read ramoops straight out of DRAM over the preloader):
-
-- `mtk da peek 0x54410000 0xe0000 --filename pstore.bin`, catching the preloader **while it
-  bootloops** (holding Power or the Volume-Down BROM route from power-off loses DRAM). The
-  console zone was at +0x4f000, pmsg at +0xd0000; the other ~80 4 KiB zones were empty
-  dmesg-dump slots. pmsg showed the container up and surface-manager loading the vendor
-  hwcomposer, so the rest of the port was healthy.
-- `dump-expdb.sh` reads DRAM first, then `mtk r expdb,cache` in the same session, and decodes
-  lk's `[AVB]` lines, the boot-image load, kernel panics, initramfs and `fs_mgr`.
-- The faillog image logs to `cache` (debugging.md § Recording the initramfs to a spare
-  partition). The first faillog `cache.bin` came back as untouched ext4: its logger started
-  only after module load. With `initrd_log_part=` it starts right after `/proc`, `/sys` and
-  devtmpfs. The empty record was itself the clue: the panic came after switch_root.
-
 ### `/cache` and the first bootloop
 
 The first hardware boot started the container, which then died in `fs_mgr` (`mke2fs returned
@@ -235,6 +216,25 @@ gave up for the boot. biomd now waits up to 30 s.
 - `MACHINE_FEATURES` lacks `camera-rear`/`camera-front`.
 - Expect the display scaling (grid unit, device pixel ratio) to need tuning by eye in the
   Tier 1 adaptation, as q25's 720x720 did.
+
+## Device-specific traps
+
+**Debugging a bootloop.** Nothing enumerates on USB when it bootloops, there is no pstore
+console to read afterwards, and expdb's kedump region came back as zeros (twice) while lk's
+own log showed `lk boot reason = 4` (`kernel_panic`, `exp_type 0x2`). What worked (method:
+debugging.md § MediaTek: read ramoops straight out of DRAM over the preloader):
+
+- `mtk da peek 0x54410000 0xe0000 --filename pstore.bin`, catching the preloader **while it
+  bootloops** (holding Power or the Volume-Down BROM route from power-off loses DRAM). The
+  console zone was at +0x4f000, pmsg at +0xd0000; the other ~80 4 KiB zones were empty
+  dmesg-dump slots. pmsg showed the container up and surface-manager loading the vendor
+  hwcomposer, so the rest of the port was healthy.
+- `dump-expdb.sh` reads DRAM first, then `mtk r expdb,cache` in the same session, and decodes
+  lk's `[AVB]` lines, the boot-image load, kernel panics, initramfs and `fs_mgr`.
+- The faillog image logs to `cache` (debugging.md § Recording the initramfs to a spare
+  partition). The first faillog `cache.bin` came back as untouched ext4: its logger started
+  only after module load. With `initrd_log_part=` it starts right after `/proc`, `/sys` and
+  devtmpfs. The empty record was itself the clue: the panic came after switch_root.
 
 ## Sources
 

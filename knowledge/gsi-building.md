@@ -100,8 +100,8 @@ Against `Halium/android_device_halium_halium_arm64` at `8dbc6dc` (tip of `halium
 The published arm64 16.0 GSIs from `halium-luneos-20260910` on ship every snapshot the
 tree carries (`PRODUCT_EXTRA_VNDK_VERSIONS := 27 28 29 30 31 32 33 34`, v30 copied in
 from the 14.0 tree as for `halium_arm` below), so one arm64 GSI serves vendors from
-Android 8.1 to 14 and adding a device never means rebuilding the GSI. That change is not
-yet on the `herrie/16.0` branch. Each snapshot costs ~40 MB of system.img, uncompressed.
+Android 8.1 to 14 and adding a device never means rebuilding the GSI. The published
+`herrie/16.0` branch (tip `25c6f12`) does not carry that change. Each snapshot costs ~40 MB of system.img, uncompressed.
 
 | VNDK | vendor | | VNDK | vendor |
 |---|---|---|---|---|
@@ -113,7 +113,8 @@ yet on the `herrie/16.0` branch. Each snapshot costs ~40 MB of system.img, uncom
 linkerconfig looks the snapshot up by the vendor's exact `ro.vndk.version` (a LineageOS 20
 vendor built with `BOARD_VNDK_VERSION := current` reports 33, and v34 cannot stand in
 for it). A15+ vendors have no `ro.vndk.version` and need no snapshot (architecture.md).
-The 32-bit `halium_arm` GSI ships 30, 32 and 34. Snapshots install to
+The 32-bit `halium_arm` GSI carried 30, 32 and 34 in its first 16.0 build (`20260827-1`,
+below); the current `20261007-1` carries v27 to v34 (the mindphone recipe). Snapshots install to
 `/system/system_ext/apex/com.android.vndk.v<N>`; check a candidate GSI with
 `debugfs -R "ls /system_ext/apex" system.img`.
 
@@ -166,7 +167,7 @@ Package the built `system.img` as `halium-luneos-<ver>-<date>-N-<product>.tar.bz
 
 Selecting between a GSI and an old device build per machine: device-bringup-yocto.md § android-system-image recipes.
 
-Not built yet: the GSI as a standalone artifact the installer picks per device, rather than an `android-system-image-<device>` recipe in the image. With the 16.0 GSI carrying VNDK 27–34, one GSI per architecture would cover every current vendor.
+There is no standalone GSI artifact the installer picks per device; each machine gets the GSI through an `android-system-image-<device>` recipe in the image. With the 16.0 GSI carrying VNDK 27–34, one GSI per architecture would cover every current vendor.
 
 When a machine moves to a newer GSI generation, its android-headers move with it: device-bringup-yocto.md § What a machine conf contains.
 

@@ -52,7 +52,7 @@ The config delta) plus:
 
 - **Poison list `FANOTIFY`, `NET_L3_MASTER_DEV`** — with them on, 3145 exported CRCs drift
   and all 203 stock modules fail; with them off, 0 drift (kmi-crc-matching.md § Poison
-  options). Consequences: no fanotify, no VRF, LXC keeps the IPC namespace.
+  options). Consequences: no fanotify, no VRF.
 - `# CONFIG_MODULE_SIG_PROTECT is not set` (`MODULE_SIG`/`MODULE_SIG_ALL` stay `=y`). With
   it on, the phone's own vendor modules count as unsigned and Wi-Fi/BT never load although
   every CRC matches; found here (kmi-crc-matching.md § A failure class invisible to CRC

@@ -245,7 +245,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 const PROMPTS = {
   "luneos-session-start": {
     description:
-      "Load the complete LuneOS porting knowledge base into the session before working on LuneOS.",
+      "Orient a session on the LuneOS porting knowledge base: read the architecture overview, then pull topics as needed.",
     messages: () => [
       {
         role: "user",

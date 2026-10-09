@@ -12,7 +12,9 @@ for a kernel config is the vendor whose modules the device loads, not the OEM
 (kmi-crc-matching.md), and read *every* fstab the vendor ships (debugging.md §
 Modem).
 
-## Status (as of 25 Sep 2026, kit rev 9)
+## Status (as of 25 Sep 2026)
+
+Hardware results are from kit rev 9.
 
 | Area | State | Notes |
 |---|---|---|
@@ -27,15 +29,6 @@ Modem).
 | Fingerprint | broken | the HAL never starts |
 | NFC | unknown | a stale gbinder `ApiLevel` was the suspected cause; fixed in rev 8's rootfs, not retested |
 | Power button | unreliable | same desync as above |
-
-Checks after flashing:
-
-```sh
-dmesg | grep -iE 'disagrees about version|Unknown symbol'   # expect nothing
-lsmod | wc -l                                               # expect ~40
-dmesg | grep -i 'mount-android: overlaid'                   # the bind-mount
-journalctl -b | grep -i "gbinder ApiLevel"                  # expect 36
-```
 
 ## Platform facts
 
@@ -149,7 +142,7 @@ MiB. Tags follow the stock image (the board file says 0x01E00000).
 `sunfish_check_boot_window` (a `do_deploy` postfunc) fails the build if the kernel
 runs into the ramdisk address — a build-time invariant; on a header-v2 image loaded
 by ABL the window may not bind at all (boot-images.md § The kernel/ramdisk window —
-a build-time invariant). The 30 Sep 2026 kit image: kernel section 21,163,040 B,
+a build-time invariant). The current kit image: kernel section 21,163,040 B,
 12,358,624 B of headroom. Read logged headroom from `log.do_deploy*` in time order —
 the files are named by build id, so a glob does not sort them by date.
 
@@ -220,6 +213,14 @@ uses. General steps: installing.md.
 ## Open issues
 
 - Wifi, audio, sensors and BT with the module overlay (rev 8+) — not recorded.
+  Checks after the next flash:
+
+  ```sh
+  dmesg | grep -iE 'disagrees about version|Unknown symbol'   # expect nothing
+  lsmod | wc -l                                               # expect ~40
+  dmesg | grep -i 'mount-android: overlaid'                   # the bind-mount
+  journalctl -b | grep -i "gbinder ApiLevel"                  # expect 36
+  ```
 - Camera: VINTF registration. Fingerprint: the HAL never starts.
 - Display-manager/compositor desync: random locking, unreliable power button.
 - **ofono 2.19 SEGV** right after the SIM file reads (`Requested file structure

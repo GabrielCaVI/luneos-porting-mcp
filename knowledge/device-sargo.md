@@ -18,7 +18,7 @@ The device the GSI/GKI architecture was proven on. One generic rootfs (`MACHINE=
 | NFC | partial | reaches `RF_DISCOVER` without error after the Tier 2 `libncicore.conf` and its `Before=nfcd.service` ordering; no tag read yet |
 | Alarms / RTC | alarms work via timerfd; RTC cannot be written | below |
 | Waydroid | boots | after the socket and `configstore` fixes |
-| Suspend | unverified | the 12 Sep idle triage saw no suspend in 10 h |
+| Suspend | unverified | the idle triage saw no suspend in 10 h (Subsystem notes) |
 
 ## Platform facts
 
@@ -201,7 +201,7 @@ properties), `install.sh` over adb or ssh with `--revert`.
 
 ### Idle health
 
-10 h idle on a charger (12 Sep 2026, beside tissot; method in debugging.md § Stage 5): no
+10 h idle on a charger, measured beside tissot (method in debugging.md § Stage 5): no
 memory leaks (`surface-manager` 166 MB at 17 min vs 165 MB at 10.5 h on tissot) and no
 unexplained crashes, but no suspend at all in that boot.
 
@@ -250,14 +250,18 @@ bar is focused (address bar 115 → 323 device px at zoom 2.4).
 - `luneos-speechd`'s uncorked stream; maliit/webapp-mgr abort on Wayland loss.
 - Suspend never observed in the idle triage; do not rely on wake-from-suspend yet.
 - `ofono-conf/sargo/*` to be replaced by slot derivation.
+- The layer's `lineageos_bonito_defconfig` still sets `CONFIG_SYSVIPC=y`; LuneOS does not
+  need it — drop it from the layer.
 
-## What sargo can and cannot test
+## Device-specific traps
 
-**Can:** the vendor API 28→31 ladder on one device, A/B, retrofit dynamic partitions,
-FBE/AVB/APEX (from an A10 vendor up), the generic-rootfs claim, Halium 14/16 GSIs over a 12.1
-vendor. **Cannot:** GKI Tier A, the `init_boot` path, anything above vendor API 31 as a vendor
-(AIDL composer, gralloc5 vendors, VNDK-less A15+ vendors). Keep a second sargo as a known-good
-reference; check `getprop ro.vndk.version` on LineageOS 22 before assuming it cannot go higher.
+- **What sargo can test:** the vendor API 28→31 ladder on one device, A/B, retrofit
+  dynamic partitions, FBE/AVB/APEX (from an A10 vendor up), the generic-rootfs claim,
+  Halium 14/16 GSIs over a 12.1 vendor.
+- **What it cannot:** GKI Tier A, the `init_boot` path, anything above vendor API 31
+  as a vendor (AIDL composer, gralloc5 vendors, VNDK-less A15+ vendors). Check
+  `getprop ro.vndk.version` on LineageOS 22 before assuming it cannot go higher.
+- Keep a second sargo as a known-good reference.
 
 ## Sources
 

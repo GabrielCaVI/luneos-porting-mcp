@@ -23,7 +23,7 @@ phone ran a 3.9-day uptime by 6 Oct 2026.
 | Boot, container | works (hardware) | kernel and boot image KMI-verified 0/344, vermagic matching |
 | Keyboard | works (hardware) | symbol layers, Sym-tap emoji key and BlackBerry-key-as-Ctrl patched into `bbqX0kbd`; toolbelt keycodes measured (Subsystem notes) |
 | Trackpad scrolling | untested on hardware | kbdscroll reads relative pads now; never exercised on the device |
-| Display / UI | runs | `deviceinfo_display_dpi=291`, `device_pixel_ratio=1.6` are arithmetic, not yet tuned |
+| Display / UI | runs | `deviceinfo_display_dpi=291`, `device_pixel_ratio=1.6` are arithmetic, untuned |
 | Audio | partly | output gains set and measured in the codec log; **this unit's loudspeaker is dead in hardware** (silent under stock Android too); earpiece needs a local mixer append |
 | IR transmitter | present | `/dev/lirc0` (`mtk-pwm-ir-tx`), `LIRC_CAN_SEND_PULSE`, read on the phone |
 | Connectivity combo | running | `stp_dump3` stubbed (busy-looped at ~11,500 calls/s) |
@@ -77,11 +77,11 @@ Droidian port, and the stock firmware (`OS-new-camera-0120-Q25-GMS.zip`, build
   |---|---|
   | ACK 5.10.250 (Halium fork) + `gki_defconfig` + droidian + LuneOS fragments | **344 of 344 would fail** |
   | device tree 5.10.198, device config chain, no LuneOS delta | **0 would fail** |
-  | + an early LuneOS delta that also enabled `USER_NS` (and SysV IPC) | **344 would fail** |
+  | + an early LuneOS delta that also enabled `USER_NS` (and options LuneOS no longer sets) | **344 would fail** |
   | + LuneOS delta as shipped | **0 would fail** ← shipped |
 
-  **KMI-poison on MediaTek mgk android12-5.10 / MT6789: `CONFIG_USER_NS` and/or SysV
-  IPC**, measured only as a group; both stay off (SysV IPC is not needed). Clean:
+  **KMI-poison on MediaTek mgk android12-5.10 / MT6789: `CONFIG_USER_NS`**, bisected
+  only as part of a group, so its own share is unmeasured; it stays off. Clean:
   `PID_NS`, `CHECKPOINT_RESTORE`, `DEVTMPFS(+MOUNT)`, `FHANDLE`,
   `TMPFS_XATTR`/`POSIX_ACL`, `AUTOFS_FS`, `VT`, `QUOTA_NETLINK_INTERFACE`,
   `UEVENT_HELPER`, `STATIC_USERMODEHELPER=n`, the netfilter/PPP/L2TP block, the
@@ -94,7 +94,7 @@ Droidian port, and the stock firmware (`OS-new-camera-0120-Q25-GMS.zip`, build
   works), `VT`/`BT_HCIVHCI` unset (the fragment sets both), `DEBUG_INFO_BTF` unset
   (no pahole), **`OVERLAY_FS=y`**, `ANDROID_BINDERFS=y`, `USB_CONFIGFS_RNDIS` and
   `ECM` both `y`, `CONFIG_MODULE_FORCE_LOAD` unset. Re-check the deployed
-  `kernel-config` once (expect `NET_L3_MASTER_DEV`, `DUMMY`, `SYSVIPC`).
+  `kernel-config` once (expect only the deliberate errors above).
 - **Vermagic:** `files/vermagic.cfg` sets `CONFIG_LOCALVERSION="-android12-9-gfcab0aff02db"`
   with `LOCALVERSION_AUTO` off, and `do_configure:prepend` writes an empty
   `.scmversion` (else `setlocalversion` appends `+`). Merged unconditionally,
@@ -109,8 +109,8 @@ Droidian port, and the stock firmware (`OS-new-camera-0120-Q25-GMS.zip`, build
   16.0 MB, KMI-neutral, re-verified 0/344. Set `"0"` if a shipped image must match
   the vendor's codegen. Editing `luneos.cfg` at all, comments included, costs a full
   rebuild.
-- **Command line:** `CONFIG_CMDLINE` carries what LuneOS needs (selinux=0,
-  `console=tty0`, the cgroup-v1 pair), because MediaTek's G99 lk drops the first 20
+- **Command line:** `CONFIG_CMDLINE` carries what LuneOS needs (`console=tty0`, the
+  cgroup-v1 pair; it also still carries `selinux=0`, see Open issues), because MediaTek's G99 lk drops the first 20
   characters of the boot-image cmdline (kernel-porting.md § The kernel command
   line). `ANDROID_BOOTIMG_CMDLINE` is `????????????????????log_buf_len=4M
   printk.devkmsg=on cgroup_disable=net_prio`; `net_prio` is disabled to pre-empt the
@@ -124,8 +124,8 @@ Droidian port, and the stock firmware (`OS-new-camera-0120-Q25-GMS.zip`, build
   module cannot be swapped on a running device: `rmmod bbqX0kbd` takes the kernel
   down. Rules: kmi-crc-matching.md § The initramfs route.
 - **Not shipping the vendor's modules wholesale:** the CRCs already match 344/344,
-  so nothing is gained, and on MT6789 embedding 180 modules pushed the MP01's boot
-  image to 31.6 MB, which lk would not load (device-mp01.md § Rejected paths).
+  so nothing is gained, and on the MP01 (same SoC) embedding the 180 vendor_boot
+  modules left lk no longer starting our init (device-mp01.md § Rejected paths).
 - **Module audit:** our build produces 333 of the 344 stock modules. Missing:
   `met.ko` + 9 × `met_*_api.ko` (MediaTek tracing, absent from the tree) and
   `fpsgo.ko` (we build `mtk_fpsgo.ko` from `fpsgo_v3/`) — none matters. The
@@ -134,17 +134,9 @@ Droidian port, and the stock firmware (`OS-new-camera-0120-Q25-GMS.zip`, build
   Makefiles name `mali_mgm_$(MTK_PLATFORM_VERSION)` / `mali_prot_alloc_...` from an
   unexported variable, which produced `mali_mgm_.ko`; the recipe passes
   `MTK_PLATFORM_VERSION=mt6789` (kmi-crc-matching.md § The initramfs route).
-### 5.10 kbuild gotchas
-
-Not device-specific — expect them on any 5.10 port; each cost a build cycle:
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `register 'sp' unsuitable for global register variables on this target` in `asm-offsets.c` | 5.10 derives clang's `--target` from `CROSS_COMPILE`; `LLVM=1` alone does not imply one (6.1 works it out from `ARCH`), so clang built for the x86_64 host | `CROSS_COMPILE=aarch64-linux-gnu-` — only the triple is used |
-| wants an external assembler | 5.10 defaults to `-fno-integrated-as` | `LLVM_IAS=1` |
-| `link-vmlinux.sh: python: not found` after a full compile | 5.10 spells `PYTHON` as `python` and calls `scripts/jobserver-exec` | `PYTHON=python3` (Droidian's CI symlinks `python`→`python2`, host-wide and the wrong interpreter) |
-
-Plus `CROSS_COMPILE_COMPAT=arm-linux-gnueabi-`, because `CONFIG_COMPAT_VDSO=y`.
+- **5.10 kbuild traps** (`CROSS_COMPILE` for clang's target, `LLVM_IAS=1`,
+  `PYTHON=python3`, `CROSS_COMPILE_COMPAT`) were found here and are general:
+  kernel-porting.md § 5.10 kbuild gotchas.
 
 ### Rejected path: ACK android12-5.10
 
@@ -187,7 +179,7 @@ vendor_boot (stock, untouched): 64 MiB, v4, one 18.9 MB gzip ramdisk fragment, d
 incl. `bbqX0kbd.ko` and `8250_mtk.ko`.
 
 Our image reproduces every stock header field except the sizes and the cmdline:
-27,066,368 B with full LTO (13 Sep 2026), **23,470,080 B (22.4 MiB)** for the current
+27,066,368 B with full LTO, **23,470,080 B (22.4 MiB)** for the current
 ThinLTO image with the patched keyboard driver.
 
 ## Vendor and GSI
@@ -377,6 +369,9 @@ telephony dies once and stays dead, but it would need moving to meta-android.
   `grep -h '^N: Name' /proc/bus/input/devices`.
 - Re-tune "Lineout Volume" on a Q25 whose speaker works.
 - Record the wifi, BT, modem, camera and charging results.
+- `luneos.cfg`'s `CONFIG_CMDLINE` still carries `selinux=0`, against kernel-porting.md
+  § selinux=0: do not pass it on a Halium port; drop it and rely on
+  `androidboot.selinux=permissive`.
 - Battery: if the phone powers off within a minute on a charger, check
   `/sys/class/power_supply/battery/capacity` (the MP01's symptom).
 

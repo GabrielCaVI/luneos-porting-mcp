@@ -24,8 +24,6 @@ Hardware-verified on a BBF100-8 unless marked otherwise.
 | Camera | broken | `announcing 0 droid camera(s)`; unresolved |
 | Modem, GPS | untested | |
 
-Whether fingerprint, NFC and sensors fail for one shared reason is **unverified**: that boot ran libgbinder on the API 31 preset against this A15 vendor (hal-userspace.md § The build-time setting cannot serve most devices, and once lied). Retest each with `ApiLevel` resolved correctly (hal-userspace.md § How it is handled now) before fixing them separately. Independent of the protocol: a HIDL-only `biomd` cannot use an AIDL-only fingerprint HAL.
-
 ## Platform facts
 
 | Fact | Value |
@@ -149,7 +147,7 @@ W libEGL  : eglInitialize(...) failed (EGL_BAD_ALLOC)
 
 **Extracting it:** the OTA ships `vendor.new.dat.br`; Brotli-decompress, then apply `vendor.transfer.list`'s "new" commands into a flat image (block size 4096, ranges are pairs `[a,b)`). Result 671,100,928 B, md5 `da7ef852edc65bec207b6b2c71b30efb`. Flash it as-is, leave `system` alone, loop-mount the GSI from userdata.
 
-**VINTF:** the /e/OS vendor manifest was 53 HALs, all `format="hidl"`, `target-level="5"` (FCM 5 = Android 11) against an Android 16 framework matrix; that fails strict VINTF/VTS, which Halium does not enforce. The LineageOS 22 vendor publishes on AIDL: `biometrics.fingerprint`, `nfc`, `wifi`, `wifi.supplicant`, `wifi.hostapd`, `power`, `vibrator`, `light`, `health`, `usb`, `usb.gadget`, `memtrack`, `media.c2`.
+**VINTF:** the /e/OS vendor manifest was 53 HALs, all `format="hidl"`, `target-level="5"` (FCM 5 = Android 11) against an Android 16 framework matrix; that fails strict VINTF/VTS, which Halium does not enforce. The LineageOS 22 vendor publishes on AIDL: `biometrics.fingerprint`, `nfc`, `wifi`, `wifi.supplicant`, `wifi.hostapd`, `power`, `vibrator`, `light`, `health`, `usb`, `usb.gadget`, `memtrack`, `media.c2`. Absent in that boot, asked for by HIDL name: `biometrics.fingerprint@2.1::IBiometricsFingerprint`, `sensors@2.0/@2.1::ISensors` (and the AIDL sensors name), `graphics.composer@2.2/2.3/2.4::IComposer`, `radio.config@1.2::IRadioConfig`. The rule: hal-userspace.md § Android 15 vendors are AIDL.
 
 **gbinder:** the machine builds its own rootfs with `GBINDER_API_LEVEL` 35, but every athena kit shipped the shared halium-arm64 `rootfs.ext4`, so the device ran the API 31 preset. `luneos-device-config` now resolves the level at boot; the HAL retests above have not been run since.
 
@@ -215,7 +213,13 @@ Reaching the chip-ID switch means the part answered NCI RESET over i2c. Recognis
 ## Open issues
 
 - Bluetooth `hci` index and rfkill (above).
-- Fingerprint, NFC, sensors: retest at the resolved `ApiLevel`; then an AIDL backend for `biomd`.
+- Fingerprint, NFC, sensors: whether they fail for one shared reason is **unverified** —
+  that boot ran libgbinder on the API 31 preset against this A15 vendor (hal-userspace.md
+  § The build-time setting cannot serve most devices, and once lied). Retest each with
+  `ApiLevel` resolved correctly (hal-userspace.md § How it is handled now) before fixing
+  them separately. Independent of the protocol, `biomd` needs an AIDL backend.
+- `luneos.cfg` still sets `CONFIG_SYSVIPC=y`; LuneOS does not need it — drop it from the
+  layer.
 - Camera: `announcing 0 droid camera(s)`, not investigated.
 - No pstore; fbcon takeover root cause unknown.
 - Whether the 24.9 MB window overrun ever caused a hang (cheap to settle from sstate; nothing depends on it).
