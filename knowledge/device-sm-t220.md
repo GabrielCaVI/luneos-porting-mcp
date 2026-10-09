@@ -1,210 +1,110 @@
-# Device: sm-t220 (Samsung Galaxy Tab A7 Lite Wi-Fi) — MediaTek Tier 1 behind a Samsung bootloader
+# Device: sm-t220 (Samsung Galaxy Tab A7 Lite Wi-Fi, MT8768T)
 
-Samsung Galaxy Tab A7 Lite Wi-Fi (`sm-t220`), MediaTek MT8768T, Tier B on its stock Android 12 vendor and Halium 16 GSI: boots LuneOS with audio, media and app installs.
+Samsung Galaxy Tab A7 Lite Wi-Fi (`sm-t220`), MediaTek MT8768T, Tier B on its stock Android 12 vendor and the Halium 16 GSI: boots LuneOS with audio, media, app installs.
 
-A MediaTek MT8768T (platform `mt6765`) tablet running the stock Android 12 vendor
-and its 4.19.191 kernel interface under the generic Halium 16 GSI, modelled on
-`radon`. It boots LuneOS, with speaker audio, HTML5 media (the Testr app) and app
-installs through appinstalld2 all confirmed on the device. What makes it worth
-reading is not the SoC but the chain of faults that all looked like "no sound":
-the causes were a kernel syscall, a vendor library's allocator assumption, a
-resource table and a scheduler limit, and none of them is visible in a mixer.
-Layer `meta-smartphone/meta-samsung`, `MACHINE=sm-t220`. Status file in the layer:
-`meta-samsung/conf/machine/sm-t220-STATUS.md`.
+A MediaTek tablet (platform `mt6765`) running the stock Android 12 vendor and its 4.19.191 kernel under the generic Halium 16 GSI, modelled on radon (device-radon.md). Worth reading for the chain of faults that all looked like "no sound" — a kernel syscall, a vendor library's allocator assumption, a resource table and a scheduler limit, none visible in a mixer — and for the Samsung Odin/TWRP install route (installing.md § Samsung Download mode).
 
-## Platform facts (read from the firmware and the running tablet)
+## Status (as of 4 Oct 2026)
+
+| Area | State | Notes |
+|---|---|---|
+| Boot | works | Halium initramfs finds `rootfs.img` on userdata; container up |
+| Display, touch | works | maintainer report |
+| Wi-Fi | works | maintainer report; no `firmware_class.path` needed |
+| Speaker audio | works | PulseAudio route and GStreamer, verified on device |
+| Headphones, jack detect | works | |
+| HTML5 media (umediaserver) | works | Testr app, verified on device |
+| App install (appinstalld2) | works | needs `ar` (§ Subsystem notes) |
+| Camera | works | maintainer report |
+| Sensors | partial | grip (SAR) only; proximity request answered "invalid sensor type: 8" |
+| Bluetooth, GPS, suspend/resume, charging | untested | |
+| Telephony | n/a | Wi-Fi model, no modem |
+| USB in LuneOS | none | no gadget configured, so debug over Wi-Fi ssh |
+
+## Platform facts
+
+Read from the factory firmware (T220XXSAEYE4) and the running tablet.
 
 | Fact | Value |
 |---|---|
 | SoC / platform | MT8768T, `mt6765`; PowerVR GPU behind MediaTek's "meow" EGL wrapper (`ro.hardware.egl=mtk` works) |
-| Kernel | `gta7lite/android_kernel_samsung_ot8`, branch `halium-12` (Samsung's 4.19.191 drop plus one Halium config commit), Google Clang r416183b, `gta7litewifi_defconfig` + `halium.config` + `luneos.cfg` |
-| Vendor | Android 12, VNDK 31, `ro.product.vendor.device=gta7litewifi` (so the adaptation directory is `gta7litewifi`, not `sm-t220`) |
-| Boot image | header v2, page 2048, kernel `0x40080000`, ramdisk `0x51b00000`, tags/dtb `0x47880000`; cmdline `bootopt=64S3,32N2,64N2 printk.devkmsg=on`; dtb section must be an Android `dt_table` (magic `0xd7b7ab1e`) wrapping `mt6765.dtb` — this lk does not parse a bare FDT |
-| Partitions (single slot eMMC) | boot `mmcblk0p38` (32 MiB), recovery p39, dtbo p13, vbmeta p14, super p45, userdata p51 |
-| Panel | 800x1340, driver-reported 107 x 172 mm (196 ppi, not ruler-checked) |
+| Vendor | Android 12, sdk 31, VNDK 31, `ro.product.vendor.device=gta7litewifi` (so the adaptation directory is `gta7litewifi`), `ro.hardware.hwcomposer=mtk_common` |
+| Partitions | single slot eMMC: boot `mmcblk0p38` (32 MiB), recovery p39, dtbo p13, vbmeta p14, vbmeta_system p40, vbmeta_vendor p41, super p45 (system/system_ext/vendor/product/odm), userdata p51 (f2fs) |
+| Panel | 800x1340, driver-reported 107 x 172 mm (196 ppi, not ruler-checked), `lcd_density` 213 |
 | Codec | MT6357 PMIC codec (`mtk-soc-codec-6357.c`; the `mt6358` directory next to it is not the one built) |
 | Speaker amps | two Awinic AW87xxx class-K PAs on i2c bus 3 (0x58, 0x59, chip id 0x59), fed from the codec line-out |
-| Keys | Vol Up on `mtk-kpd`, Vol Down and Power on `mtk-pmic-keys`, headset jack as a `mt-snd-card Headset Jack` input (jack detect works) |
-| Sensors | grip (SAR) sensors only; the sensors HAL answers sensorfw's proximity request with "invalid sensor type: 8" |
-| USB in LuneOS | the tablet does not enumerate on USB once LuneOS runs (no gadget configured), so debug over Wi-Fi ssh |
+| Keys | Vol Up on `mtk-kpd`, Vol Down and Power on `mtk-pmic-keys`, headset jack as a `mt-snd-card Headset Jack` input |
+| Sensors (stock) | ST lis2doc accel, Memsic mmc5603 mag, AMS tsl2540 light |
+| Power supply | `mt6370_pmu_charger`, `mtk-gauge`, `mtk-master-charger` |
+| Console | kernel dts console `ttyS0,921600n1`; whether the UART is reachable is unknown |
 
-## The Samsung lk: Odin only
+## Kernel
 
-- There is no usable `fastboot flash`: the Samsung lk's fastboot answers
-  "not allowed in locked state" and has no flash/erase commands. Flashing goes
-  through Odin (Thor) in Download mode.
-- Download mode by key: hold Vol Up + Vol Down while plugging in USB, then
-  long-press Vol Up at the warning screen to unlock. `adb reboot download` on the
-  stock Android goes straight to "Downloading...".
-- Developer options → OEM unlocking, then the long-press, gives the orange
-  state and sets the Knox warranty bit.
-- vbmeta: an unsigned header with `AVB_VBMETA_IMAGE_FLAGS_VERIFICATION_DISABLED`
-  (flags=2 at offset 120, padded to 4096) is what lets the unlocked lk boot a
-  non-Samsung image.
-- The screen's "SW REV CHECK FAIL: [userdata]" (fused 6 > binary 0) is shown but
-  the flash proceeds. It is not the failure to chase.
-- **Odin's userdata write left holes in the rootfs image on this tablet** (proven
-  to happen at flash time, content-specific, not zero runs, not decompression, not
-  the initramfs resize). Everything else flashed fine. The working route is TWRP
-  plus `adb push` (see `installing`).
-- odin4 for Linux: the release has a bug that fails multi-part sequences with
-  "expected 30 got 0"; it is fixed on `main` (commit e916c1e), so build it from
-  source. Use `TMPDIR` on a real disk (`/tmp` is a small tmpfs and the temporary
-  decompressed image does not fit), one fresh Download session per run, and put a
-  newline before the md5 trailer line of the `.tar.md5` (odin4 hashes up to the
-  previous newline; Samsung's Odin reads the line directly; a newline satisfies
-  both).
+`gta7lite/android_kernel_samsung_ot8`, branch `halium-12`: Samsung's 4.19.191 drop plus one Halium config commit, built with Google Clang r416183b, `gta7litewifi_defconfig` + the branch's `halium.config` + `luneos.cfg` (a first pass: 28 options differ from Samsung's defconfig). The running stock kernel was built with Android clang 11.0.1 (r383902).
 
-## What was broken, in the order it was found
+Patches:
 
-### 1. Boot loop about 57 s in: Samsung stubs out the raw HCI socket
+- **0002 restores `net/bluetooth/hci_sock.c`.** Samsung reduces `hci_sock_create()` to `return 0`; bluebinder's HCI socket then hits `BUG_ON(!sk)` in `bt_sock_reclassify_lock` and MediaTek's `ipanic_die()` resets the device — a "Failed to boot" panic then a reset every 77 s (57 s of it in the kernel), seen as preloader `0e8d:2000` re-enumerating. `net/bluetooth/` differed from v4.19.191 in that file only (kernel-porting.md § Vendor trees that stub out `net/bluetooth/hci_sock.c`). Evidence: `/sys/fs/pstore/console-ramoops-0`, read in TWRP right after a loop reset.
+- **0003 backports `waitid(P_PIDFD)`.** Applied to 4.19.191 with only line offsets; the 4.14 `CLONE_PIDFD` `*parent_tidptr` follow-up is not needed here because this `copy_process()` has no such check (kernel-porting.md § `pidfd_open()` without `waitid(P_PIDFD)`).
 
-Symptom: the "Failed to boot" panic, then a reset every 77 s (preloader `0e8d:2000`
-re-enumerating). Cause: Samsung comments out almost all of
-`net/bluetooth/hci_sock.c` and reduces `hci_sock_create()` to `return 0`. Android
-never opens an HCI socket; bluebinder does, `bt_sock_create()` then calls
-`bt_sock_reclassify_lock(NULL)` and `BUG_ON(!sk)` fires; MediaTek's
-`ipanic_die()` / mrdump resets the device. Evidence came from the ramoops console
-(`/sys/fs/pstore/console-ramoops-0`, readable in TWRP right after a looping boot).
-`net/bluetooth/` differs from v4.19.191 in that one file only, so the fix is to
-make it identical again. Check any Samsung/MTK vendor tree for the same stub
-before blaming the kernel config.
+**Known difference from stock dtb: battery charging data.** The source tree is older than the firmware: `battery_cv` and the `jeita_temp_*_cv` values are 0x432380 (4.40 V) against stock 0x42d560 (4.38 V), `ss,cv-ranges` differ, and stock has a `gxy_battery_ttf` node. Decided by the maintainer: left as is, 4.40 V judged safe. Not a bug to rediscover.
 
-### 2. PulseAudio killed with no trace: RLIMIT_RTTIME
+## Boot image
 
-PulseAudio started completely, loaded `module-droid-card`, and was gone about a
-second later: `Main process exited, code=killed, status=9/KILL`, no core, no log
-line. `pulseaudio` arms `RLIMIT_RTTIME` (200 ms) when it enables real-time
-scheduling; the droid sink threads run `SCHED_RR` and a write into the MediaTek
-HAL can run longer than that without sleeping, so the scheduler tick sends SIGKILL
-from interrupt context. It was found with the kernel's `signal_generate`
-tracepoint filtered to `sig==9`: the sender was the `droid-sink-deep` thread
-itself, in hard-IRQ context. Fix: `rlimit-rttime = -1` in
-`/etc/pulse/daemon.conf.d/`, which keeps real-time scheduling.
+Header v2, page 2048, kernel `0x40080000`, ramdisk `0x51b00000`, tags/dtb `0x47880000`, os_version `0x18000195` (Android 12, patch 2025-05); cmdline `bootopt=64S3,32N2,64N2 printk.devkmsg=on`. The dtb section must be an Android `dt_table` (magic `0xd7b7ab1e`, one entry id 0) wrapping `mt6765.dtb` — this lk does not parse a bare FDT. `do_make_dt_table` builds it, and the same layout rebuilds Samsung's table byte for byte (boot-images.md § Class 1 — legacy header v2).
 
-### 3. The speakers: a vendor library that assumes zeroed `malloc`
+## Vendor and GSI
 
-With PulseAudio stable there was still no sound, while headphones worked (a
-direct `aplay` to `hw:0,0` with only `Audio_Amp_L/R` on was audible there).
-Everything a mixer can set was tried and was silent on the speakers: amps on,
-`Music` profile, `Ext_Speaker_Amp_Switch`, `Speaker_Amp_Switch`, line-out gain,
-`I2S0DL1`, with the jack verified empty. The mixer state during real HAL playback
-was identical to the manual setup except that the HAL never selected the Awinic
-path, which pointed at the HAL's own decision, not at the hardware.
+Stock Android 12 vendor (VNDK 31) out of `super`, served by the Halium 16 `halium_arm64` GSI. The running firmware was T220XXS6CWL2 (Android 13 system, Android 12 vendor); boot-image work used the newer factory T220XXSAEYE4.
 
-That decision is `AudioALSAHardwareResourceManager::setNonSmartPAType()`, which
-reads the feature option `MTK_AUDIO_SPEAKER_PATH` and maps `int_spk_amp` → 0
-(internal amp, `speaker_output` only), `int_lo_buf` → 1, `int_hp_buf` → 2 (the
-`aw_speaker_*` / Awinic path), `2_in_1_spk` → 3, `3_in_1_spk` → 4. The vendor
-`AudioParamOptions.xml` says `int_hp_buf`, but the HAL logged
-`MTK_AUDIO_NUMBER_OF_MIC undefined in AudioParamOptions` and used type 0, i.e. it
-never read the file. `strace -f -e trace=openat,newfstatat` on a copy of the
-PulseAudio process showed why:
+## Yocto
+
+Layer `meta-smartphone/meta-samsung`, `MACHINE=sm-t220`; status file `meta-samsung/conf/machine/sm-t220-STATUS.md`. `deviceinfo_hardware_egl="mtk"`; `deviceinfo_android_skip_services="stp_dump"`.
+
+## Install
+
+Samsung Download mode route (installing.md § Samsung Download mode (Odin, TWRP)). Device specifics:
+
+- **Unlock once:** Developer options → OEM unlocking, then Download mode (Vol Up + Vol Down while plugging in USB) and long-press Vol Up at the warning screen. Orange state; the Knox warranty bit is set. `adb reboot download` from stock goes straight to "Downloading...".
+- The Samsung lk's fastboot answers "not allowed in locked state" and has no flash/erase commands.
+- **vbmeta:** an unsigned header with `AVB_VBMETA_IMAGE_FLAGS_VERIFICATION_DISABLED` (flags=2 at offset 120, padded to 4096) lets the unlocked lk boot a non-Samsung image.
+- **Odin** (`odin4` for Linux, built from `main` at e916c1e or later; the release fails multi-part sequences with "expected 30 got 0") is fine for `boot` and `vbmeta`. Use `TMPDIR` on a real disk, one fresh Download session per run, and a newline before the md5 trailer of the `.tar.md5`. `SW REV CHECK FAIL: [userdata]` (fused 6 > binary 0) is cosmetic.
+- **Odin's userdata write left holes in the rootfs image** — at flash time, content-specific, not zero runs, not decompression, not the initramfs resize. Do not use it for userdata.
+- **Rootfs through TWRP** (Vol Up + Power): `adb -s <serial> push rootfs.ext4 /data/rootfs.img.new` (~79 MB/s; over Wi-Fi ssh ~0.6 MiB/s, an hour for 4.4 GB), verify the checksum, rename the current file to `rootfs.img.prev` and the new one to `rootfs.img`. Always `adb -s`: TWRP and another device are often both on the bus.
+- **Boot partition from a running LuneOS:** `dd` the `Image.gz.fastboot` to `/dev/mmcblk0p38`, read back and compare, keep a copy of the old partition. BusyBox `dd` here has no `conv=notrunc`; patch in place by concatenating `dd bs=4` pieces. `android-kernel-bootimg`'s postinst writes the boot image too, so an `opkg` install of it re-flashes the kernel.
+- **Rollback:** `ro.boot.rp=6` on the tablet (…XXS6… firmware). Flashing the YE4 factory bootloader raises the rollback value irreversibly; the LuneOS package touches only boot, vbmeta and userdata. Restore with matching firmware to keep the option of going back to S6.
+- After the first boot on a new rootfs ssh refuses the old host key: new image, new keys.
+
+## Subsystem notes
+
+**PulseAudio killed with no trace: `RLIMIT_RTTIME`.** PulseAudio loaded `module-droid-card` and died ~1 s later (`code=killed, status=9/KILL`, no core, no log). It arms `RLIMIT_RTTIME` (200 ms) with real-time scheduling; the droid sink threads run `SCHED_RR` and a write into the MediaTek HAL can run longer without sleeping, so the scheduler tick SIGKILLs from interrupt context. Found with the `signal_generate` tracepoint filtered to `sig==9` (debugging.md § Tooling appendix): sender `droid-sink-deep` itself, `code=128`, hard-IRQ. Fix: `rlimit-rttime = -1` in `/etc/pulse/daemon.conf.d/`, keeping real-time scheduling.
+
+**Speakers silent, headphones fine: uncleared `malloc` in a vendor library.** A direct `aplay` to `hw:0,0` with only `Audio_Amp_L/R` on was audible on headphones; every mixer setting was silent on the speakers, with the jack verified empty. The HAL never selected the Awinic path. `AudioALSAHardwareResourceManager::setNonSmartPAType()` maps `MTK_AUDIO_SPEAKER_PATH`: `int_spk_amp` → 0 (internal amp, `speaker_output` only), `int_lo_buf` → 1, `int_hp_buf` → 2 (`aw_speaker_*` / Awinic), `2_in_1_spk` → 3, `3_in_1_spk` → 4. The vendor `AudioParamOptions.xml` says `int_hp_buf`, but the HAL logged `MTK_AUDIO_NUMBER_OF_MIC undefined in AudioParamOptions` and used 0. `strace -f -e trace=openat,newfstatat` on a copy of the PulseAudio process:
 
     newfstatat(".../\264\254\213\233U/vendor/etc/audio_param_huaqin/NA/AudioParamOptions.xml") = -1 ENOENT
 
-Five stale bytes in front of the path. `libaudio_param_parser-vnd.so`
-`appGetXmlDirFromProperty()` does `buf = malloc(512)` and then `strcat(buf, path)`
-without clearing `buf` (it also `property_set`s the corrupted value, which is
-where `persist.vendor.audio.tuning.def_path = "wڞU/vendor/..."` came from).
-Bionic's allocator returns zeroed memory for a fresh block, glibc's under
-libhybris does not. Setting the property by hand does nothing (the HAL rebuilds the
-path itself), and `MALLOC_PERTURB_=255` does nothing either because glibc's
-thread cache returns blocks without applying it; adding
-`GLIBC_TUNABLES=glibc.malloc.tcache_count=0` made `module-droid-card` fail to
-load. What works is changing that one allocation to `calloc(512, 1)` in a copy of
-the vendor library and bind-mounting it over the original at boot, before
-PulseAudio starts: `mov w1,#1` / `nop` / `bl calloc@plt` replacing the
-`ldr`/`stur`/`bl malloc` sequence, and a `nop` over the stack-protector check
-that no longer has a canary to compare. The layer does this at runtime on the
-device's own library, checks every instruction word it changes and does nothing
-on a different build, so no vendor binary is redistributed. See
-`hal-userspace` for the general lesson.
+`libaudio_param_parser-vnd.so` `appGetXmlDirFromProperty()` does `buf = malloc(512)` then `strcat(buf, path)` (and `property_set`s the corrupted value: `persist.vendor.audio.tuning.def_path = "wڞU/vendor/..."`). General lesson: hal-userspace.md § Vendor libraries that assume Android's zeroed `malloc`. Did not work: setting the property (the HAL rebuilds the path), `MALLOC_PERTURB_=255` (tcache bypasses it), `GLIBC_TUNABLES=glibc.malloc.tcache_count=0` (`module-droid-card` then failed to load). What works: `mtk-audio-param-fixup` patches a copy of the device's own library at boot — `mov w1,#1` / `nop` / `bl calloc@plt` replacing `ldr`/`stur`/`bl malloc`, plus a `nop` over the now canary-less stack-protector check — checks every instruction word it changes, does nothing on a different build, and bind-mounts it over the original before PulseAudio starts. No vendor binary is redistributed. Not the amplifier switch: the 32-bit `awinic.audio.effect.so` the HAL fails to `dlopen` ("is 32-bit instead of 64-bit") is Awinic's speaker-protection DSP (`aw_piano_*`).
 
-The other rejected idea is worth recording because it looked right: the 32-bit
-`awinic.audio.effect.so` that the HAL fails to `dlopen` ("is 32-bit instead of
-64-bit") is Awinic's software speaker-protection DSP (the `aw_piano_*` symbols),
-not the code that switches the amplifiers on.
+**`module-droid-hidl` without its helper.** It spawns `/usr/libexec/audiosystem-passthrough/audiosystem-passthrough`, but the recipe had only a build-time `DEPENDS`, so the image lacked the binary ("helper disappeared"). Check the runtime dependency whenever a module execs a helper.
 
-### 4. `pulseaudio-modules-droid-hidl` without its helper
+**Web-app audio: three layers** (hal-userspace.md § webOS media server (umediaserver) on Halium): `waitid(pid:N, pidfd=M) failed: Invalid argument (22)` / `Pooled process N exited with status -1` (patch 0003); then `execve("/usr/sbin/reference-media-pipeline") = -1 ENOENT` from `strace -f -p <umediaserver>` — the shared `umediaserver-configs` names a binary nothing ships, the tree has `/usr/sbin/g-media-pipeline` (not device-specific: hammerhead and q25 behave the same); then a plain WAV asks for `1 ADEC` and `8 VDEC` against a table of 2 each (`POLCAND_FIND_ERR no suitable candidate found`, `MEDIA_ERROR_FORMAT`). VDEC 16 / ADEC 8 lets two players run — a judgement, not a measurement. Testing gotcha: the player is created at page load, so after a failed load pressing play logs nothing; relaunch the app (`luna-send -n 1 luna://com.webos.service.applicationmanager/launch`) with the trace already running.
 
-`module-droid-hidl` spawns `/usr/libexec/audiosystem-passthrough/audiosystem-passthrough`,
-but the recipe only had a build-time `DEPENDS` on it, so the image carried the
-module without the binary ("helper disappeared"). Check the *runtime* dependency
-whenever a module execs a helper.
+**`stp_dump3` at 93% CPU.** `start-android-hals.sh` starts every service init left stopped, including `disabled` ones; MediaTek's connectivity core-dump collector sat at ~93% (56 CPU-minutes in one reading) beside a load average ~26. Tell: `init: Processed ctl.start for 'stp_dump' from pid: 0`. Fix: `deviceinfo_android_skip_services="stp_dump"`, plus a `prop.halium` with `persist.vendor.connsys.coredump.mode=0` (and the AEE dump properties) bind-mounted over the GSI's empty `/system/etc/prop.halium` — the mechanism FuriOS' adaptations use. It was not what made file copies slow; the Wi-Fi path was (under 1 MiB/s with it stopped).
 
-### 5. Nothing plays through the webOS media server (found with Testr)
+**appinstalld2.** It unpacks an IPK with `ar`, which the standard image lacks (busybox built without the applet; `binutils` only in the developer package group): `Failed to execute child process "ar"`. Its package database under `/media/cryptofs/apps` cannot see system packages, so `Depends: cordova` fails with `nothing provides cordova`; repack without `Depends:` for a test. A hand-run `opkg install` succeeds into the system root, which is misleading. `LunaAppManager`, `appinstalld` and `ApplicationInstallerUtility` log the exact `opkg` command line in the journal.
 
-Testr's HTML5 audio test was silent although PulseAudio and the speakers were
-fine, and no stream ever reached PulseAudio. Three layers:
+Audio-debugging and logging techniques found here (jack-state check via `EVIOCGSW`, `amixer contents` diffs on the host, strace from the deploy directory's ipk, `logcat -b all -c` against a flooding tag) are in debugging.md (§ Audio, § Tooling appendix). On this chatty MTK kernel the dmesg ring and the journal's kernel part rotate within minutes, so audio/accdet/i2c probe lines are gone by the time you ssh in: reboot and read them at once, or capture `journalctl -k -b` early. `AudioALSAPlaybackHandlerNormal` alone filled logcat with 35,000 lines.
 
-- **Kernel.** `umediaserver` logged `waitid(pid:N, pidfd=M) failed: Invalid
-  argument (22)` and `Pooled process N exited with status -1`. GLib (≥ 2.74)
-  commits to its pidfd child watch as soon as `pidfd_open()` succeeds; this tree
-  (Android's 4.19 backport) has `pidfd_open()` but not the 5.4 half,
-  `waitid(P_PIDFD)`, so every reap failed. Same fix as athena and mindphone: the
-  backport in the shr-distribution/linux fork. The follow-up they need on 4.14
-  ("do not require a zeroed `*parent_tidptr`" for `CLONE_PIDFD`) is not needed on
-  a tree whose `copy_process()` has no such check — read the code before copying
-  a fix list.
-- **Config.** After that the pipelines still failed: `strace -f -p <umediaserver>`
-  showed `execve("/usr/sbin/reference-media-pipeline") = -1 ENOENT`. The shared
-  `umediaserver-configs` names that binary; the tree ships
-  `/usr/sbin/g-media-pipeline` and nothing provides the other name. This is
-  **not device-specific** (hammerhead and q25 behave the same).
-- **Resources.** With the right binary a plain WAV makes `g-media-pipeline` ask
-  for `1 ADEC` and `8 VDEC` against a table of 2 each: `POLCAND_FIND_ERR no
-  suitable candidate found`, then `MEDIA_ERROR_FORMAT` in the page. The counts
-  are abstract units; VDEC 16 / ADEC 8 lets two players run. Those numbers are a
-  judgement, not a measurement.
+## Open issues
 
-Gotcha for testing: the player is created when the page loads, so a failed load
-leaves it in an error state and pressing play later logs nothing. Close and
-relaunch the app (`luna-send -n 1 luna://com.webos.service.applicationmanager/launch`)
-with the trace already running.
+- Panel size not ruler-checked; proximity probably absent on the Wi-Fi model, not checked against the spec sheet.
+- GPS, Bluetooth, suspend/resume, charging behaviour.
+- `luneos.cfg` is a first pass; validate against `/proc/config.gz` of a running kernel.
+- Backlight node for the initramfs `machine.conf` not set.
+- No USB gadget in LuneOS.
 
-### 6. `stp_dump3` at 93% CPU
+## Sources
 
-MediaTek's connectivity core-dump collector was started by
-`start-android-hals.sh`, which starts every service init left stopped, including
-services marked `disabled`. It sat at about 93% CPU in `top` (56 CPU-minutes
-accumulated in one reading) beside a load average around 26. Do not blame it for
-slow file copies: an ssh copy stayed under 1 MiB/s with it stopped, the Wi-Fi path
-being the limit. The telling log line is
-`init: Processed ctl.start for 'stp_dump' from pid: 0`. Fix:
-`deviceinfo_android_skip_services="stp_dump"`, plus a `prop.halium` with
-`persist.vendor.connsys.coredump.mode=0` (and the AEE dump properties) bind-mounted
-over the GSI's empty `/system/etc/prop.halium` — the mechanism FuriOS' adaptations
-use.
-
-### 7. appinstalld2 cannot install anything on the standard image
-
-`appinstalld2` unpacks an IPK by running `ar`, and the standard image has none
-(busybox is built without the applet; `binutils` is only in the developer
-package group): `Failed to execute child process "ar"`. After that, its separate
-package database under `/media/cryptofs/apps` cannot see system packages, so an
-IPK with `Depends: cordova` fails with `nothing provides cordova` — repack the
-control file without `Depends:` for such a test. A hand-run
-`opkg install` of the same IPK succeeds into the system root, which is misleading:
-the installer does not use that database.
-
-## Deploying to this tablet
-
-- Boot partition: from a running LuneOS, `dd` the `Image.gz.fastboot` straight to
-  `/dev/mmcblk0p38` and read it back to compare checksums; no Download mode
-  needed. Keep a copy of the previous partition.
-- Rootfs: boot TWRP (Vol Up + Power), `adb push` the `rootfs.ext4` to
-  `/data/rootfs.img.new` (about 79 MB/s over USB; over Wi-Fi ssh the same file
-  runs at about 0.6 MiB/s), compare checksums, then rename the old file to
-  `rootfs.img.prev` and the new one to `rootfs.img`. Always `adb -s <serial>`:
-  another tablet is usually plugged in too.
-- The package's `android-kernel-bootimg` post-install writes the boot image to
-  the partition, so an `opkg` install of it re-flashes the same kernel.
-
-## Open items
-
-Panel size not ruler-checked; GPS, Bluetooth, suspend/resume and charging
-behaviour not verified; `luneos.cfg` is a first pass (28 options differ from
-Samsung's defconfig); the backlight node for the initramfs `machine.conf` is not
-set; the proximity sensor is probably absent on the Wi-Fi model but that is not
-checked against the spec sheet.
+- https://github.com/gta7lite/android_kernel_samsung_ot8 (branch `halium-12`)
+- LineageOS device trees `android_device_samsung_mt6765-common` and `android_device_samsung_gta7litewifi` in the same GitHub org, branch `lineage-22.2`
+- https://github.com/shr-distribution/meta-smartphone (`meta-samsung`)

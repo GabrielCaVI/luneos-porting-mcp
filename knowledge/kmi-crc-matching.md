@@ -397,8 +397,7 @@ baseline number without checking the recipe actually honours the switch.
 An option is **KMI-poison** when it changes a struct that exported symbols carry,
 moving their genksyms CRCs so the stock modules refuse to load. LuneOS needs a
 small delta an Android defconfig omits (kernel-porting.md § The config delta); most
-of it is CRC-neutral. `CONFIG_SYSVIPC` is not in it: LuneOS does not need SysV IPC,
-so leave `# CONFIG_SYSVIPC is not set`.
+of it is CRC-neutral.
 
 **The poison list is a property of the KMI *and* kernel tree.** Re-derive it per
 KMI with `kmi-crc-check.py`; never transplant it between KMIs in either direction.
@@ -408,7 +407,7 @@ Measured so far:
 |---|---|---|
 | ACK `android14-6.1` (bluejay, panther) | `FANOTIFY`, `NET_L3_MASTER_DEV` | cumulative bisect: 3145 → 0 drift, 203/203 → 2/203 failing (the 2 were ACK-pin skew; kernel-porting.md § Vendor-hook modules) |
 | sunfish 4.14 (LineageOS tree) | `FANOTIFY`, `CGROUP_DEVICE` | per-option measurement below |
-| MediaTek mgk `android12-5.10` (Q25) | `USER_NS` kept off; held out together with the SYSVIPC group, never measured on its own | device-q25.md |
+| MediaTek mgk `android12-5.10` (Q25) | `USER_NS` kept off (not measured on its own) | device-q25.md |
 
 Within a KMI it transfers: panther confirmed bluejay's fragment unchanged
 (204/204 modules, 0 mismatches). Whether `CGROUP_DEVICE` shows up depends on

@@ -490,6 +490,10 @@ check each on any pre-4.x Tier B port.
   MediaTek's G99 lk drops the first 20 characters of the boot image command line
   (device-q25.md). Anything LuneOS needs goes in `CONFIG_CMDLINE`, not the boot
   image header.
+- **Set `CMDLINE` in any recipe that requires meta-oe's `linux.inc`.** It
+  unconditionally writes `CONFIG_CMDLINE="${CMDLINE} ${CMDLINE_DEBUG}"`, so with
+  `CMDLINE` unset the vendor's built-in string (`root=`, `vmalloc=`, …) is silently
+  replaced (found on radon; see device-radon.md).
 - **`cgroup_disable=net_prio`** breaks a boot- and shutdown-time deadlock wherever
   LXC + connman run on a MediaTek `ccmni` modem: `net_prio`'s `cgrp_css_online()`
   takes rtnl under cgroup_mutex while connmand holds rtnl waiting on an events

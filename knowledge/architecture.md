@@ -130,7 +130,7 @@ device-bringup-yocto.md § mount-android.sh and the LXC container.
 
 **Placeholders, not defaults.** Shipped config files are placeholders: device-describing values in them must be obviously invalid (zeros, empty lists, `/dev/input/PLACEHOLDER`). A plausible constant is worse than a broken one — it is right often enough that the devices where it is wrong never announce themselves (`luna-platform.conf` shipped `DPI=445` and it became the effective DPI of every device without an adaptation; `nyx.conf` shipped sargo's key nodes; `surface-manager.env` shipped sargo's touchscreen node). Two rules: never read a value back out of the file you generate; put genuine fallbacks in the generator, not the config. Values that are not derived at all stay as working values, marked as such.
 
-**Applying an adaptation: bind-mounts now, overlayfs when available.** Copying files in would destroy universality — the mechanism must be non-destructive and re-evaluated every boot. Do NOT use oe-core's `overlayfs-etc.bbclass` (needs a hardcoded per-machine device node, replaces `/sbin/init`, solves a read-only-rootfs problem we don't have). Raw overlayfs (`lowerdir=<adaptation>/etc:/etc`, Droidian's model) is the right shape but e.g. sargo's 4.9 kernel lacks `CONFIG_OVERLAY_FS`. So: prefer overlayfs when `/proc/filesystems` advertises it, fall back to per-file bind-mounts.
+**Applying an adaptation: bind-mounts now, overlayfs when available.** Copying files in would destroy universality — the mechanism must be non-destructive and re-evaluated every boot. Do NOT use oe-core's `overlayfs-etc.bbclass` (needs a hardcoded per-machine device node, replaces `/sbin/init`, solves a read-only-rootfs problem we don't have). Raw overlayfs (`lowerdir=<adaptation>/etc:/etc`, Droidian's model) is the right shape but e.g. sargo's stock 4.9 defconfig lacks `CONFIG_OVERLAY_FS` (LuneOS's `halium-kernel.inc` turns it on, but not every vendor tree will take it). So: prefer overlayfs when `/proc/filesystems` advertises it, fall back to per-file bind-mounts.
 
 **Prior art — UBports' overlay store** is this exact design productized (UBports docs,
 https://docs.ubports.com/en/latest/porting/configure_test_fix/Overlay.html). Enabled with
@@ -155,7 +155,26 @@ when one is needed. (Droidian, https://docs.droidian.org/porting-guide/debugging
 
 ## Devices
 
-Per-device state lives in the `device-<codename>.md` files.
+One row per port; status as recorded in each `device-<codename>.md` (October 2026), which
+holds the detail, sources and open issues.
+
+| Device | Product | SoC | Tier | Kernel | Vendor | GSI | Status |
+|---|---|---|---|---|---|---|---|
+| `sargo` | Google Pixel 3a | Qualcomm SDM670 | B | 4.9.124 (linux-google-sargo) | Android 12.1, VNDK 32 | 16.0 (and 14.0) arm64 | full UI; the GSI pilot and reference device |
+| `bluejay` | Google Pixel 6a | Google Tensor gs101 | A | ACK android14-6.1 (linux-halium-gki_6.1) | Android 16 bp4a | 16.0 arm64 | kernel and initramfs boot on hardware; UI on Mali open |
+| `panther` | Google Pixel 7 | Google Tensor G2 gs201 | A | bluejay's kernel binary | Android 16 bp4a | 16.0 arm64 | host-side verified (204/204 modules); never flashed |
+| `sunfish` | Google Pixel 4a | Qualcomm SM7150-AB (730G) | B | 4.14.357 LineageOS, own vendor-module build | LineageOS 23.2 (SDK 36) | 16.0 arm64 | boots to UI; camera and fingerprint broken |
+| `bramble` | Google Pixel 4a 5G | Qualcomm SM7250 (765G) | B | 4.19.325 LineageOS redbull | LineageOS 23.2 | 16.0 arm64 | built and verified host-side; never booted |
+| `mindphone` | GreenTouch MindPhone | MediaTek MT6739 | B, 32-bit | 4.14.186 vendor tree | Android 11, VNDK 30 | 16.0 arm | UI, Wi-Fi, BT, dual-SIM, audio and T9 work |
+| `q25` | Zinwa Q25 / Q25 Pro | MediaTek MT6789 (G99) | A (mgk; device tree, not ACK) | 5.10.198 LineageOS xelex | Android 12, VNDK 31 | 16.0 arm64 | runs on hardware; keyboard and audio measured |
+| `mp01` | Minimal Phone MP01 | MediaTek MT6789 (G99) | A (mgk) | 5.10.233 vendor source | Android 12, VNDK 31 | 16.0 arm64 | boots to UI (E Ink); battery %, fingerprint, portrait web apps open |
+| `radon` | FuriLabs FuriPhone FLX1s | MediaTek MT6877 | B | 4.19.325 FuriLabs | Android 12L, VNDK 32 | 16.0 arm64 | UI, audio, Wi-Fi, camera work; BT and modem not recorded |
+| `titanpocket` | Unihertz Titan Pocket | MediaTek MT6771 (P70) | B | 4.14.186 ALPS tree | Android 11, VNDK 30 | 16.0 arm64 | boots to UI, keyboard works; audio fails |
+| `sm-t220` | Samsung Galaxy Tab A7 Lite Wi-Fi | MediaTek MT8768T | B | 4.19.191 Samsung | Android 12, VNDK 31 | 16.0 arm64 | boots; audio, media, display, touch, Wi-Fi, camera work |
+| `a3-2015-halium` | Samsung Galaxy A3 (2015) | Qualcomm MSM8916 | B, 32-bit | 3.10.108 | LineageOS 18.1, VNDK 30 | 16.0 arm | UI, modem, Wi-Fi, BT, audio, camera work |
+| `athena` | BlackBerry KEY2 | Qualcomm SDM660 | B | 4.19.325 | LineageOS 22 (A15) | 16.0 arm64 | lock screen; display, touch, QWERTY, Wi-Fi, audio work; BT, NFC, sensors, camera broken |
+| `fajita` | OnePlus 6T | Qualcomm SDM845 | B | 4.9.337 LineageOS | LineageOS 22.2 (A15) | 16.0 arm64 | builds, verified host-side; never run on hardware |
+| `surya` | Xiaomi POCO X3 NFC | Qualcomm SM7150-AC (732G) | B | 4.14.356 LineageOS | /e/OS A15 | 16.0 arm64 | one on-device logcat (container up, sensors broken); otherwise untested |
 
 ## The Halium container handshake
 

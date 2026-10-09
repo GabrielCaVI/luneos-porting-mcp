@@ -50,7 +50,7 @@ Every fastboot kit has the same pure-fastboot shape — no `fastboot boot` + `ad
 Contents of the userdata image:
 
 - `rootfs.img` — the deploy ext4 of `luneos-image-halium-arm64` (universal rootfs, ~2.6–3 GB).
-- `android-rootfs.img` — the Halium GSI `system.img` (raw ext4, system-as-root). **The name matters** (`halium-boot.sh` checks `/tmpmnt/android-rootfs.img`), and it must sit **next to** `rootfs.img` on userdata (the halium `file_layout`), not only inside the rootfs.
+- `android-rootfs.img` — the Halium GSI `system.img` (raw ext4, system-as-root). **The name matters** (`halium-boot.sh` checks `/tmpmnt/android-rootfs.img`), and the halium `file_layout` puts it **next to** `rootfs.img` on userdata. mindphone instead carries it inside `rootfs.img` and boots, so both layouts are in use (device-mindphone.md).
 
 Rebuild command (adjust size):
 
@@ -155,9 +155,13 @@ boot-failure gadget: boot-images.md § Debug images.
 
 ## Anti-rollback (ARB) — read before flashing anything on a Pixel
 
-- **bluejay:** bootloader ARB was bumped by Android 13 (Oct 2022) and **again by the May 2025 update**. A device on Android 16 cannot boot anything older than the May-2025 A15 build; flashing older factory images risks a **permanent brick**, including via the inactive-slot fallback trap — keep both slots consistent. Consequence: no downgrade ladder on bluejay; the port targets the 6.1 kernel + Android 16 vendor + Halium 16 GSI, full stop.
-- **panther:** same shape. The device must be on `bp4a` (the build ported against) or downgradable to it; never flash older than the installed build. If a device shows up on a newer build (cp1a/cp2a = Android 17), redo the factory-image analysis against that build — ARB forbids going back to bp4a.
-- General rule for the boot-image ports: the LuneOS boot image pairs with a specific stock vendor build (kernel modules, cmdline, vendor HALs). Match the factory image you analyzed to what is on the device.
+Pixel bootloaders enforce anti-rollback: flashing a factory build older than the ARB level
+on the device risks a **permanent brick**, including through the inactive-slot fallback, so
+keep both slots consistent and never flash older than what is installed. The LuneOS boot
+image pairs with a specific stock vendor build (kernel modules, cmdline, vendor HALs):
+match the factory image you analysed to what is on the device, and redo the analysis if the
+device is on a newer build. Device specifics: device-bluejay.md § Install,
+device-panther.md § Install.
 
 ## Installer end state (not yet built)
 

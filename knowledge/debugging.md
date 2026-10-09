@@ -285,14 +285,20 @@ Grow it offline with `e2fsck -fy /data/rootfs.img && resize2fs -f /data/rootfs.i
 
 1.1 assumes the bootloader concatenated `vendor_boot`'s ramdisk with ours, as AOSP specifies. Verify it: when it does not happen, `load_kernel_modules()` returns silently (`[ -f /lib/modules/modules.load ] || return 0`), and a device whose storage *and* USB are modules cannot find its root filesystem and cannot tell you so.
 
-The robust fix is to ship the vendor's modules **inside the LuneOS initramfs**:
+The fix is to ship a **minimal** set of the vendor's modules (storage, USB, watchdog)
+inside the LuneOS initramfs, not the whole set:
 
 ```
 ANDROID_EXTRA_INITRAMFS_IMAGE_INSTALL = "<machine>-vendor-modules"
 IMAGE_ROOTFS_SIZE:pn-initramfs-android-image = "65536"   # default 8 MB is too small
 ```
 
-with a recipe installing the extracted `.ko` plus `modules.load`/`.dep`/`.softdep` to `/lib/modules` (example: `meta-minimal/recipes-bsp/mp01-vendor-modules`; 180 modules compress to 5.5 MB). If the concatenation does happen, the same files land in the same place. Use `install`, not `cp -a`, in `do_install`, or `do_package` dies with `KeyError: 'getpwuid(): uid not found: 1000'`.
+with a recipe installing the extracted `.ko` plus `modules.load`/`.dep`/`.softdep` to
+`/lib/modules`. Keep the boot image near stock size: embedding all 180 MP01 modules
+(+5.5 MB) made MediaTek lk stop starting our init at all, silently (found on mp01; see
+device-mp01.md). If the concatenation does happen, the same files land in the same
+place. Use `install`, not `cp -a`, in `do_install`, or `do_package` dies with
+`KeyError: 'getpwuid(): uid not found: 1000'`.
 
 ### 1.9 Debug mode must come *after* module loading
 
@@ -401,6 +407,8 @@ Isolate layers bottom-up with the libhybris test binaries, compositor stopped fi
 | Compositor races the vendor HAL | Wait for `IComposer` to register on hwbinder; Droidian's `ExecStartPre=sleep 5` drop-in is the weaker version |
 | Compositor spins on "failed to get drm master" | Device booted in charger mode (below), or the HWC was opened twice (`deviceinfo_force_hwc2`) |
 | Hardware keys ignored by Qt | udev tags the keypad `ID_INPUT_KEY` only; Qt evdevkeyboard needs `ID_INPUT_KEYBOARD` — promote with a udev rule (mindphone `mtk-kpd`) |
+| Compositor picks `Writeback1`, hangs ~90 s and restarts forever (MediaTek) | MediaTek DRM reports its writeback connectors as permanently connected; exclude `Writeback` connectors in `product.env` as well as `Virtual` (device-radon.md) |
+| Healthy LuneOS behind a foreign boot logo | A vendor/distro initramfs started plymouthd, which survives `switch_root` holding the framebuffer; boot with `plymouth.enable=0` (device-radon.md) |
 | `library "libpq_cust.so" not found` from MTK HWC | Benign — the vendor ships `libpq_cust_base.so` and the HAL falls back |
 
 **Charger-mode boots and DRM master.** A MediaTek device that is never truly off boots with `androidboot.bootreason=usb` whenever a cable is attached; `init.halium.rc` then starts `/system/bin/charger`, which takes DRM master and never gives it back (`lsof | grep card0`). `start-android-hals.sh` stops it via `DISPLAY_CONFLICT_MATCH` — but there are two copies of that script (`meta-android` and `meta-luneos`; the `meta-luneos` one ships). Diff the deployed file against both before assuming a fix is in.
