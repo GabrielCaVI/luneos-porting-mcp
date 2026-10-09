@@ -14,15 +14,15 @@ The trick is not really "GSI" in the Android sense — it is **Project Treble**:
 - `/android` (our generic Halium GSI) provides Android init + `hwservicemanager`/`servicemanager` + the VNDK/`libbinder`/`libhidl` set the vendor HALs link against.
 - Compatibility is negotiated at runtime through **VINTF** (`compatibility_matrix.xml` / `manifest.xml`). The binding constraint is the **vendor API level**, *not* the Android version the device currently runs. Read it from `ro.vndk.version`, or from `ro.vendor.build.version.sdk` on A15+ vendors, which have no `ro.vndk.version` and whose `ro.board.api_level` is a YYYYMM date (202404, 202504) rather than an SDK number (see device-fajita.md). Never read `ro.build.version.release` for this.
 - **An A15+ vendor needs no VNDK snapshot.** Android 15 deprecated VNDK: the former VNDK libs ship in `/vendor` itself, `ro.vndk.version` is absent, and the GSI only has to provide the framework side. Older vendors need the GSI to carry the snapshot matching their `ro.vndk.version` (linkerconfig looks it up by exact version); the snapshot matrix is in gsi-building.md.
-- In practice the **16.0 GSI is the production target**: every GSI machine in meta-smartphone pins `android-headers-halium` 16.0 (sargo also boots 14.0). Its arm64 build carries the VNDK 27–34 snapshots, so one image serves vendors from Android 8.1 to 14 as well as A15+ vendors. Limitation: libhybris past Android 13 is community-patched (see Key risks).
-- Vendor floor: the Halium 9 GSI requires an **Android 9 vendor** as its base — Android 8.0/8.1 vendors are "experimental" only (UBports porting-notes, https://github.com/ubports/porting-notes/wiki/Generic-system-image-(GSI)).
+- **Everything runs the 16.0 GSI**, on both arm64 (`halium_arm64`) and 32-bit armv7 (`halium_arm`) userlands, and every GSI machine pins `android-headers-halium` 16.0. The GSI carries the VNDK 27–34 snapshots, so one image serves vendors from Android 8.1 to 14 as well as A15+ vendors, which need none. Limitation: libhybris past Android 13 is community-patched (see Key risks).
+- **Legacy devices convert their vendor bits into a `vendor.img` the 16.0 GSI consumes.** A device with no usable Treble vendor — a pre-Treble Halium 9 build whose vendor payload sits inside one monolithic `system.img`, or a vendor built from an old LineageOS tree — gets a Treble-shaped `vendor.img` made from it at build time and shipped beside the GSI, instead of running an old per-device Android. See gsi-building.md § Legacy devices: a vendor.img for the 16.0 GSI.
 
 ## The artifact table
 
 | Artifact | Count | Device-specific? |
 |---|---|---|
 | LuneOS rootfs (`rootfs.img`) | **1** for all arm64 devices | no |
-| Halium GSI (`system.img` → `/android`) | **1 in use**: 16.0 (`halium_arm64`, plus `halium_arm` for 32-bit userlands). 9.0/11.0/13.0/14.0 are built and published but no current port uses them | no — the GSI carries a VNDK snapshot per vendor API level |
+| Halium GSI (`system.img` → `/android`) | **1 in use**: 16.0, as `halium_arm64` (aarch64) and `halium_arm` (armv7). 9.0/11.0/13.0/14.0 are built and published but no current port uses them | no — the GSI carries a VNDK snapshot per vendor API level |
 | Boot image (kernel + LuneOS initramfs) | **~4 GKI KMIs** + one per legacy device | GKI: no. Legacy: yes |
 | Device adaptation (udev, audio, modem, quirks) | ~15 tiny files per device | yes, but *data*, not a build |
 

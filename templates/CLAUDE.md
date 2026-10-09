@@ -18,6 +18,8 @@ Ground rules from the knowledge base that always apply:
 - Match the GSI to the device's **vendor API level** (`ro.vndk.version`, or
   `ro.vendor.build.version.sdk` — `ro.board.api_level` is a YYYYMM date on
   Android 15+ vendors), never to the Android version it currently runs.
+- Every device runs the **16.0 GSI** (`halium_arm64` or 32-bit `halium_arm`);
+  legacy devices get their vendor bits converted into a `vendor.img` it can consume.
 - `android-headers` versions track **the GSI, not the vendor**.
 - Derive device configuration at runtime where possible; shipped config files
   are placeholders, not defaults.

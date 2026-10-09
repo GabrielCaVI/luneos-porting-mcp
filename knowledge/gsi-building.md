@@ -177,6 +177,40 @@ They do not build GSIs: they re-host UBports Jenkins artifacts pinned to a job n
 
 Also do not rely on `mirrors.lolinet.com/firmware/halium/GSI` — not updated since 2020.
 
+## Legacy devices: a vendor.img for the 16.0 GSI
+
+Every device runs the 16.0 GSI, including those with no Treble vendor of their own. For them
+the vendor half is converted into a Treble-shaped `vendor.img` at build time and shipped next to
+the GSI; the headers follow the GSI (16.0), not the vendor.
+
+- **Pre-Treble Halium 9 builds** (hammerhead, mako, tenderloin): one monolithic `system.img`
+  with the vendor payload under `/system/vendor`, plus vendor pieces scattered over the rest of
+  the image. `halium-legacy-vendor.bbclass` (meta-android, with `lib/halium/legacy_vendor.py`)
+  moves into the new image the HAL modules left in `/system/lib/hw`, the Qualcomm/display
+  libraries the vendor links against, the daemons the device init starts from `/system/bin`,
+  and the device init and ueventd scripts (to `/vendor/etc/init/hw/` and
+  `/vendor/etc/ueventd.rc`, which Android 16 init reads). It works through `debugfs`, so the
+  build stays unprivileged, takes the LLNDK list from the GSI rather than a hand-written one,
+  and reports what it cannot resolve instead of guessing.
+- **Vendors built from an old LineageOS tree** (a3-2015-halium from LineageOS 18.1 / VNDK 30,
+  goyavewifi from LineageOS 16.0 / VNDK 28, sm-t520) go through the same class via
+  `android-system-image-legacy-gsi.inc`.
+- **Android 9 vendors from `m vendorimage`** (tissot, mido): a real `vendor.img` already
+  exists and is paired with the GSI directly.
+
+The per-device knobs (`HALIUM_LEGACY_*` in the class) cover the VNDK level the old vendor links
+against (`HALIUM_LEGACY_VNDK`, default 28 — the GSI must carry that snapshot), which init files
+to carry and which services or commands to drop (a container must not start `charger`, remount
+what the host mounted or touch the host's USB gadget), dlopen()ed libraries, HALs to declare
+hwbinder rather than passthrough (composer and allocator by default), and `/system/build.prop`
+tuning to carry into the vendor's build.prop. The machine conf chooses the Android it boots
+with `<DEVICE>_ANDROID_SYSTEM` (`"gsi"` or `"device"`).
+
+A converted image can be published next to the GSI as `<machine>-vendor.img` in the same
+`halium-images` release; a recipe that sets `HALIUM_LEGACY_VENDOR_SHA256` then fetches it as is
+instead of deriving it (sm-t520 does). Such a device must use the GSI unmodified, or the GSI it
+gets is not the one the image was made against.
+
 ## GSI-side fixes for legacy vendors
 
 - `system/linkerconfig` (branch luneos/sphal-vndk-legacy): let sphal link libbinder.so and libui.so from
