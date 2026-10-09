@@ -2,25 +2,27 @@
 
 This project works on LuneOS (webOS) ports for Android devices via Halium GSI/GKI.
 
-At the start of every session, load the complete LuneOS porting knowledge base
-from the `luneos-mcp` server by reading this resource:
+The `luneos-mcp` server holds the porting knowledge base. At the start of a
+session read `luneos://knowledge/architecture` (the overview, device index and
+glossary), then pull only what the task needs:
 
-luneos://knowledge/all
+- `luneos_search` for a symptom, config option, file name or tool;
+- `luneos_get_topic` for a whole topic (`luneos_list_topics` lists them);
+- the matching `device-<codename>` topic when working on a known device.
 
-If the task is narrow, load individual topics instead (`luneos_list_topics`
-shows what exists — architecture, kernel-porting, boot-images, gsi-building,
-device-bringup-yocto, nyx-modules, hal-userspace, debugging, installing, tools,
-and per-device references like device-bluejay).
+`luneos://knowledge/all` concatenates everything (well over 100k tokens); load it
+only when a task really spans the whole base.
 
 Ground rules from the knowledge base that always apply:
 
-- Match the GSI to the device's **vendor API level** (`ro.vndk.version` /
-  `ro.board.api_level`), never to the Android version it currently runs.
+- Match the GSI to the device's **vendor API level** (`ro.vndk.version`, or
+  `ro.vendor.build.version.sdk` — `ro.board.api_level` is a YYYYMM date on
+  Android 15+ vendors), never to the Android version it currently runs.
 - `android-headers` versions track **the GSI, not the vendor**.
 - Derive device configuration at runtime where possible; shipped config files
   are placeholders, not defaults.
 - Verify KMI compatibility host-side (`kmi-crc-check.py`) **before** flashing
-  any rebuilt GKI kernel.
+  any rebuilt kernel; the KMI-poison list is per KMI and tree, never copied.
 - Respect anti-rollback: never flash a factory build older than the one on the
   device.
 - When a device does not come up, follow `luneos://knowledge/debugging` stage

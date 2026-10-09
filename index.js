@@ -46,15 +46,16 @@ function loadTopics() {
     // Title = first heading; description = first non-empty paragraph after it.
     const lines = content.split("\n");
     const title = (lines.find((l) => l.startsWith("# ")) || `# ${name}`).replace(/^#\s*/, "");
-    let description = "";
+    // A paragraph may be hard-wrapped: join its lines up to the next blank line.
+    const para = [];
     let pastTitle = false;
     for (const line of lines) {
-      if (line.startsWith("# ")) { pastTitle = true; continue; }
-      if (pastTitle && line.trim() && !line.startsWith("#")) {
-        description = line.trim();
-        break;
-      }
+      if (!pastTitle) { pastTitle = line.startsWith("# "); continue; }
+      if (!line.trim()) { if (para.length) break; continue; }
+      if (line.startsWith("#") && !para.length) continue;
+      para.push(line.trim());
     }
+    const description = para.join(" ");
     topics.set(name, { name, file, title, description, content });
   }
   return topics;
@@ -86,8 +87,8 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => {
       uri: "luneos://knowledge/all",
       name: "All LuneOS porting knowledge",
       description:
-        "Every LuneOS GSI/GKI porting, bring-up and debugging topic concatenated. " +
-        "Load this at session start when working on a LuneOS port.",
+        "Every LuneOS GSI/GKI porting, bring-up and debugging topic concatenated (very large). " +
+        "Prefer luneos://knowledge/architecture plus luneos_search / individual topics.",
       mimeType: "text/markdown",
     },
   ];
@@ -252,9 +253,11 @@ const PROMPTS = {
           type: "text",
           text:
             "You are helping with LuneOS (webOS) development on Halium/GSI/GKI Android devices. " +
-            "Read the resource luneos://knowledge/all now (or call luneos_get_topic for the topics " +
-            "relevant to the task) and apply that knowledge. Key ground rules from the knowledge base: " +
-            "match the GSI to the device's vendor API level (ro.vndk.version / ro.board.api_level), " +
+            "Read luneos://knowledge/architecture now (overview, device index, glossary), then use " +
+            "luneos_search and luneos_get_topic for what the task needs; luneos://knowledge/all is " +
+            "very large, load it only when the task spans the whole base. Key ground rules: " +
+            "match the GSI to the device's vendor API level (ro.vndk.version or " +
+            "ro.vendor.build.version.sdk; ro.board.api_level is a YYYYMM date on A15+ vendors), " +
             "never to the Android version it runs; android-headers track the GSI, not the vendor; " +
             "derive device configuration at runtime instead of shipping per-device files; and when a " +
             "device does not come up, follow knowledge/debugging.md stage by stage.",

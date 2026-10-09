@@ -89,7 +89,7 @@ To have Claude load the full context automatically in a porting project, copy
 
 | URI | Content |
 |---|---|
-| `luneos://knowledge/all` | every topic concatenated — load at session start |
+| `luneos://knowledge/all` | every topic concatenated — very large; prefer `architecture` + search |
 | `luneos://knowledge/<topic>` | one topic file |
 
 Topics (auto-discovered from `knowledge/*.md`):
@@ -126,7 +126,9 @@ Topics (auto-discovered from `knowledge/*.md`):
 ## Updating the knowledge
 
 Each file in `knowledge/` is one topic; the first `# heading` is its title and
-the first paragraph its description. Add or edit files and the server picks
+the first paragraph its description, so keep that paragraph to one sentence of
+at most ~200 characters and put the rest in a second paragraph. A correction
+replaces the wrong text in place rather than being appended next to it. Add or edit files and the server picks
 them up on the next request — no restart or re-registration needed.
 
 ## License

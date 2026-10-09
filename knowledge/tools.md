@@ -4,10 +4,9 @@ The small, self-contained porting and debug tools built during the LuneOS GSI/GK
 
 Most are pure-stdlib Python or shell so they run on any host with no device
 attached — the porting method leans hard on host-side verification (KMI checks,
-module-order analysis, boot-image diffing) *before* anything is flashed. They live
-in the maintainer's working tree and in the `luneos-bootimg-bluejay` build repo,
-which republishes the KMI/module tools so end users can verify against their own
-factory images.
+module-order analysis, boot-image diffing) *before* anything is flashed. The KMI tools are published in
+[luneos-bootimg-bluejay](https://github.com/Herrie82/luneos-bootimg-bluejay) `tools/` so anyone can verify against their own factory image;
+tools marked *unpublished* exist only in the maintainer's working tree so far.
 
 ---
 
@@ -27,8 +26,8 @@ via the stock set's own `__crc_*` exports.
 ```
 python3 kmi-crc-check.py <Module.symvers> <dir of stock .kos>
 # e.g. (panther, reusing bluejay's kernel build):
-python3 ../bluejay/kmi-crc-check.py \
-    /media/herrie/LuneOS/bluejay-kernel/out-luneos-tierA/Module.symvers \
+python3 kmi-crc-check.py \
+    <bluejay kernel out>/Module.symvers \
     vkb-modules
 → 204 modules checked, 0 would fail to load
 ```
@@ -36,8 +35,7 @@ python3 ../bluejay/kmi-crc-check.py \
 **Target:** 0 failures. Known-good baselines: bluejay 203/203 after the ACK pin
 bump (201/203 before — the two `vh_*` fails were pin skew), panther 204/204.
 
-**Location:** `gsigki/bluejay/kmi-crc-check.py`; also `tools/kmi-crc-check.py`
-in the build repo.
+**Location:** `tools/kmi-crc-check.py` in [luneos-bootimg-bluejay](https://github.com/Herrie82/luneos-bootimg-bluejay).
 
 ## symvers-drift.py
 
@@ -47,8 +45,7 @@ bluejay (android14-6.1) it took the fragment from 3145 drifted symbols to **0**;
 the poisoners there are FANOTIFY and NET_L3_MASTER_DEV. The list is per KMI and
 tree; see kernel-porting.md Step 3.
 
-**Location:** `gsigki/bluejay/symvers-drift.py`; also in the build repo's
-`tools/`.
+**Location:** `tools/symvers-drift.py` in [luneos-bootimg-bluejay](https://github.com/Herrie82/luneos-bootimg-bluejay).
 
 ## module-order.py
 
@@ -62,7 +59,7 @@ violations.
 **Usage:**
 
 ```
-python3 gsigki/tools/module-order.py <lib/modules dir>
+python3 module-order.py <lib/modules dir>
 ```
 
 **Measured results:**
@@ -78,8 +75,7 @@ python3 gsigki/tools/module-order.py <lib/modules dir>
 The initramfs `init` implements the same resolution in ~40 lines of busybox awk;
 this tool is the independent cross-check (outputs verified identical).
 
-**Location:** `gsigki/tools/module-order.py`; also `tools/module-order.py` in
-the build repo.
+**Location:** unpublished.
 
 ## payload_extract.py
 
@@ -98,7 +94,7 @@ python3 payload_extract.py payload.bin outdir all   # extract everything
 
 Works on FULL payloads (mindphone's was 717 MB, minor_version=0, 16 partitions).
 
-**Location:** `gsigki/mindphone/payload_extract.py`.
+**Location:** unpublished.
 
 ## unpack_bootimg.py
 
@@ -109,7 +105,7 @@ build: `./unpack_bootimg.py boot-luneos.img /tmp/x`, then diff the printed
 fields against the stock table. It also identified mindphone's v2 dtb field as
 an AOSP dt_table (magic `0xd7b7ab1e`), not a bare FDT.
 
-**Location:** `gsigki/mindphone/unpack_bootimg.py`.
+**Location:** unpublished.
 
 ## mtkclient — reading `expdb` when the device cannot talk (MediaTek)
 
@@ -140,7 +136,7 @@ power fully off and plug in holding **Volume Down** to force BROM.
 preloader, and a bad preloader write is the one genuinely hard-to-recover brick
 on MediaTek.
 
-`/home/herrie/webos/LuneOS/MP01/dump-expdb.sh` wraps all of the above, including
+A wrapper script (`dump-expdb.sh`, unpublished) does all of the above, including
 the greps, and takes `--analyse` to re-read an existing dump.
 
 ## edl — the Qualcomm counterpart
@@ -181,7 +177,7 @@ stock 13/58; bluejay shipped config 5 errors, all accounted for.
 documented example is the obsolete `NETFILTER_XT_MATCH_QTAGUID`) — use it to
 quiet rules for options that no longer exist rather than deleting them.
 
-**Location:** `gsigki/mer-kernel-check/` (Makefile, `mer_verify_kernel_config`,
+**Location:** [mer-hybris/mer-kernel-check](https://github.com/mer-hybris/mer-kernel-check) (Makefile, `mer_verify_kernel_config`,
 `mer_verify_kernel_spec`).
 
 ## extract-vendor-modules.sh
@@ -191,7 +187,7 @@ checking. Reads both layouts: the `vendor_boot` DLKM ramdisk fragment
 (A12-launch, bluejay) **and** `vendor_kernel_boot.img` (A13-launch, panther) —
 tested on both factory zips.
 
-**Location:** `tools/extract-vendor-modules.sh` in the build repo.
+**Location:** `tools/extract-vendor-modules.sh` in [luneos-bootimg-bluejay](https://github.com/Herrie82/luneos-bootimg-bluejay).
 
 ## mkbootimg / mkdtboimg
 
@@ -315,45 +311,3 @@ modules.bzl trim → kernel-only bazel build → initramfs patch
 mkbootimg ×2 (normal + `enable_adb` debug). README documents the KMI-poison
 list, both hardware-diagnosed initramfs bugs, the ARB warning and Tensor/Mali
 status. Ships the KMI tools so users can verify against their own factory image.
-
----
-
-## gsigki/ directory layout
-
-Working directory for the whole effort (`/home/herrie/webos/gsigki/`):
-
-```
-luneos-gsi-gki-migration-plan.md   # the master plan & architecture document
-atlas-scaling-findings.md          # browser DPI/scaling investigation (sargo)
-halium16-metalava-question.md      # Halium 16 GSI build gotchas (bp4a vs trunk_staging)
-mer-kernel-check/                  # kernel config checker
-tools/module-order.py              # modules.load order analyzer
-halium16-device-patches/           # 4 patches for android_device_halium_halium_arm64
-                                   #   (VNDK 30/32 snapshots, libselinux_stubs preload,
-                                   #    uncompressed APEXes) — pushed as
-                                   #   Herrie82/…/herrie/16.0
-halium16-init-logging-patches/     # 2 AOSP init patches: tee logging to
-                                   #   /dev/socket/init.log + first-stage breadcrumbs
-bluejay/                           # Pixel 6a: bluejay-notes.md, luneos_defconfig,
-                                   #   kmi-crc-check.py, symvers-drift.py, stock config,
-                                   #   mer-check-{stock,luneos}.txt, crc bisect logs,
-                                   #   boot-bluejay-luneos{,-debug}.img, factory zip,
-                                   #   unpacked-{boot,vendor-boot}/, rd0/ rd1/ (ramdisks),
-                                   #   initramfs-work/ (init versions, overlays, cpios),
-                                   #   images/ (factory), aosp-pin-before-bump.txt
-panther/                           # Pixel 7: panther-notes.md, factory zip,
-                                   #   boot/init_boot images
-mindphone/                         # MT6739: mindphone-notes.md, payload_extract.py,
-                                   #   unpack_bootimg.py, stock-config-4.14.186.txt,
-                                   #   mer-check-stock-mindphone.txt, luneos-delta.cfg,
-                                   #   images/ (boot/dtbo/vbmeta*/lk + vbmeta-disabled,
-                                   #   userdata-luneos-16.img), unpacked-boot/
-```
-
-Flash kits (complete, distributable): `/media/herrie/LuneOS/{bluejay,panther}-staging/`
-with `install.sh`, boot images, `userdata-luneos.img`, `make-userdata.sh`,
-`luneos_<device>_<date>.tar.gz`. Kernel tree:
-`/media/herrie/LuneOS/bluejay-kernel` (serves gs101 *and* gs201). Halium GSI
-trees: `/media/herrie/HaliumDisk/{11.0,13.0,14.0,16.0}` (note: `~/Halium/11.0`
-is an empty skeleton — the live tree is on HaliumDisk). Yocto build tree:
-`/media/herrie/LuneOS/wrynose/webos-ports` (`MACHINE=<m> . ./setup-env`).

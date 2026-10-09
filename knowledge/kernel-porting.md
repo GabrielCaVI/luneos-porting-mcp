@@ -20,9 +20,8 @@ Stock Pixel GKI kernels ship `IKCONFIG` (`CONFIG_IKCONFIG_PROC` is in the good l
 below), so the config can be extracted from the stock `boot.img` kernel. On bluejay
 this produced `stock-gki-config-6.1.145-bp4a.txt`.
 
-Run `mer_verify_kernel_config` (from `gsigki/mer-kernel-check/`) on the stock config.
-Bluejay stock result: **23 errors, 59 warnings** (`mer-check-stock.txt`). This
-directly answers the migration plan's open question 2 for a real GKI device:
+Run `mer_verify_kernel_config` (from [mer-hybris/mer-kernel-check](https://github.com/mer-hybris/mer-kernel-check)) on the stock config.
+Bluejay stock result: **23 errors, 59 warnings** (`mer-check-stock.txt`). So on a real GKI device
 **`gki_defconfig` alone is NOT enough** — but the fragment is small and known.
 
 **Missing hard requirements** (systemd/LuneOS) in stock GKI:
@@ -194,7 +193,7 @@ repo init -u https://android.googlesource.com/kernel/manifest -b android-gs-blue
 
 = `kernel/common` @ android14-6.1 (path `aosp/`) + ~50 `private/google-modules/*`
 repos (soc/gs, display/samsung, wlan/bcm*, bluetooth/broadcom, gpu, aoc, …) +
-Kleaf/Bazel tooling. Tree synced at `/media/herrie/LuneOS/bluejay-kernel` (10 GB).
+Kleaf/Bazel tooling (about 10 GB synced).
 The same tree contains `private/devices/google/{gs201,pantah}` and
 `build_pantah.sh` — the `android-gs-pantah-6.1-android16` manifest branch has the
 same project set (only needed for option B on panther).
@@ -206,7 +205,6 @@ same project set (only needed for option B on panther).
   any config change.
 - LuneOS fragment: `luneos/luneos_defconfig` (+ a BUILD.bazel filegroup), applied
   via `--//build/kernel/kleaf:defconfig_fragment=//luneos:luneos_defconfig`.
-  Archived copy: `gsigki/bluejay/luneos_defconfig`.
 - Kernel-only build (the Kleaf route; the Yocto recipe below builds the same
   kernel with plain kbuild):
   ```
@@ -786,7 +784,7 @@ vendor-API-level table when triaging very old devices.
 
 ## mer-kernel-check usage (both tiers)
 
-Location: `gsigki/mer-kernel-check/` (Makefile, `mer_verify_kernel_config`,
+Location: [mer-hybris/mer-kernel-check](https://github.com/mer-hybris/mer-kernel-check) (Makefile, `mer_verify_kernel_config`,
 `mer_verify_kernel_spec`). Run `mer_verify_kernel_config` against any kernel
 config — stock (to size the delta) and your shipped config (to confirm what
 remains is deliberate). Known checker quirks to not chase:
