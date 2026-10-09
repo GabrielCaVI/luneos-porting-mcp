@@ -43,7 +43,7 @@ bump (201/203 before — the two `vh_*` fails were pin skew), panther 204/204.
 the bisect instrument for finding which config options poison the KMI. On
 bluejay (android14-6.1) it took the fragment from 3145 drifted symbols to **0**;
 the poisoners there are FANOTIFY and NET_L3_MASTER_DEV. The list is per KMI and
-tree; see kernel-porting.md Step 3.
+tree; method in kmi-crc-matching.md § Poison options.
 
 **Location:** `tools/symvers-drift.py` in [luneos-bootimg-bluejay](https://github.com/Herrie82/luneos-bootimg-bluejay).
 
@@ -203,19 +203,18 @@ ramdisk-only, kernel+ramdisk, kernel+ramdisk+`enable_adb`).
 
 ## avbtool
 
-Used for the verification-off dance on every device:
+Builds a verification-disabled vbmeta:
 
 ```
 avbtool make_vbmeta_image --flags 2 --padding_size 4096 --output vbmeta-disabled.img
-# or equivalently at flash time:
-fastboot --disable-verity --disable-verification flash vbmeta vbmeta.img
 ```
 
-On Pixels the stock vbmeta.img is flashed with the two `--disable-*` flags; on
-mindphone a flags=2 vbmeta replaces the enforcing stock one (whose descriptors
-chain boot/vbmeta_system/vbmeta_vendor). Optionally add an unsigned hash footer
-to a self-built boot.img so footer-expecting tooling stays happy — not required
-once verification is off.
+`--flags 2` is VERIFICATION_DISABLED only. `fastboot --disable-verity
+--disable-verification flash vbmeta vbmeta.img` is **not** equivalent: it sets
+flags 3 (HASHTREE_DISABLED | VERIFICATION_DISABLED). Which one a device needs,
+and why flags 3 is preferred for new kits, is in installing.md § vbmeta: flags 2 vs flags 3.
+`avbtool add_hash_footer` can append an unsigned hash footer to a self-built
+boot.img for footer-expecting tooling — not required once verification is off.
 
 ## lxc-checkconfig
 
@@ -297,10 +296,8 @@ A13-launch machines (`ANDROID_BOOTIMG_INIT_BOOT = "1"`). The initramfs from
 bitbake is the canonical one — it carries the module-loader/cmdline-params and
 userdata-resize fixes via `initramfs-scripts-halium`, and has been *newer* than
 hand-maintained overlay ramdisks in practice (it picked up the find-the-Android-
-image fix the hand kits lacked). The GKI kernel is built in bitbake too, by
-`linux-halium-gki` (6.1) with Google's prebuilt clang r487747c rather than the OE
-toolchain, and `luneos-bootimg-gki` pulls it in; set `GKI_KERNEL_IMAGE` only to
-use an out-of-tree Image such as the `build-bootimg.sh` output.
+image fix the hand kits lacked). The GKI kernel recipe and `GKI_KERNEL_IMAGE`:
+kernel-porting.md § Step 4.
 
 ## build-bootimg.sh (luneos-bootimg-bluejay repo)
 

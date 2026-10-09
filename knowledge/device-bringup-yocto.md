@@ -2,9 +2,8 @@
 
 How a LuneOS port is wired into Yocto: layer geography, machine confs, the generic halium-arm64 machine, GKI boot-image machines, GSI recipes, LXC config and build traps.
 
-The GKI machine pattern was proven on bluejay (Pixel 6a) and panther (Pixel 7), the
-32-bit pitfalls on mindphone (MT6739); most of the rest was established during the
-sargo/bluejay/panther/mindphone ports (Aug–Sep 2026).
+Device stories live in the device files; this file holds the rules and the recipe
+mechanics they share.
 
 ## ANDROID_BOOTIMG_* changes do not always re-run do_deploy
 
@@ -28,11 +27,7 @@ MACHINE=<m> bitbake -f -c deploy linux-<vendor>-<device>
 ```
 
 and then verify the produced image rather than trusting the build (see the
-kernel/ramdisk window check in boot-images.md). This bit athena twice in one
-session: once when a dropped `ANDROID_BOOTIMG_RAMDISK_RAM_BASE` silently fell back
-to the bbclass default `?= "0x00000000"` — a ramdisk load address of zero, which
-the build is perfectly happy to emit — and once when restoring it appeared to
-change nothing.
+kernel/ramdisk window check in boot-images.md). (Found on athena; see device-athena.md.)
 
 A missing `*_RAM_BASE` is worth calling out on its own: the default is `0x0`, so a
 recipe that loses the line produces an image whose ramdisk is loaded at address
@@ -64,25 +59,27 @@ zero. Nothing in the build complains.
 
 Real examples on disk:
 
-**`meta-google/conf/machine/sargo.conf`** (legacy Tier B, Pixel 3a):
-- `PREFERRED_VERSION_android-headers-halium = "9.0%"`
-- `VIRTUAL-RUNTIME_android-system-image = "android-system-image-sargo"`
-- `PREFERRED_PROVIDER_virtual/kernel = "linux-google-sargo"` (4.9.124, LineageOS `bonito`
-  defconfig)
-- Hardcoded `ANDROID_BOARD_BOOTIMAGE_PARTITION = /dev/block/mmcblk0p13`, partition sizes,
-  `SERIAL_CONSOLE`. Also still pulls in `xserver-xorg` + `xf86-video-fbdev` — dead weight.
+**`meta-google/conf/machine/sargo.conf`** (Tier B, Pixel 3a) — a machine that builds
+only the kernel and boot image; the rootfs is `halium-arm64`'s:
+- `PREFERRED_PROVIDER_virtual/kernel ?= "linux-google-sargo"`
+- `PREFERRED_VERSION_android-headers-halium = "16.0%"` (tracks the GSI, below)
+- `VIRTUAL-RUNTIME_android-system-image = ""` — no system image baked in
+- No XSERVER: the stack is hwcomposer-based.
+- Still hardcoded: `ANDROID_BOARD_BOOTIMAGE_PARTITION = "/dev/block/mmcblk0p13"`,
+  `SERIAL_CONSOLE = "115200 ttyMSM0"`.
 
 **`meta-greentouch/conf/machine/mindphone.conf`** (32-bit MTK): `TARGET_ARCH=arm` +
 `tune-cortexa8`, `KERNEL_IMAGETYPE = zImage`, `SERIAL_CONSOLE ttyMT0`, by-name boot
 partition path, `PREFERRED_VERSION_android-headers-halium` bumped `11.0%` → `16.0%` when
 the device moved to the Halium 16 arm32 GSI.
 
-**android-headers rule (settled on sargo, contrary to what the 13.0/14.0 recipes state):
-the android-headers version has to track the GSI, not the vendor.** libhybris gates its
-Android 16 support on `ANDROID_VERSION_MAJOR >= 16` and that macro comes from this package.
-Verified safe for the vendor ABI: `gralloc.h`, `hwcomposer2.h`, `hardware.h`, `lights.h`
-are byte-identical between 11.0 and 16.0, and `audio_hw_device`'s member order is unchanged
-with four fields appended.
+**android-headers track the GSI, not the vendor** (contrary to what the 13.0/14.0
+recipes state). libhybris gates its per-generation support on `ANDROID_VERSION_MAJOR`
+(Android 16: `>= 16`), and that macro comes from this package. Verified safe for the vendor
+ABI: `gralloc.h`, `hwcomposer2.h`, `hardware.h`, `lights.h` are byte-identical between 11.0
+and 16.0, and `audio_hw_device`'s member order is unchanged with four fields appended. When
+a machine moves to a newer GSI generation, bump `PREFERRED_VERSION_android-headers-halium`
+with it and rebuild libhybris. (Found on sargo; see device-sargo.md.)
 
 **`meta-android/conf/machine/include/meta-android-halium.inc`** carries
 `MACHINEOVERRIDES =. "halium:"`, libhybris as `virtual/egl|mesa|libgles*`, `ofono-halium`,
@@ -91,9 +88,8 @@ blocker (every package becomes `aarch64-halium`).
 
 ## The generic `halium-arm64` machine
 
-One universal arm64 rootfs, no kernel, no GSI baked in. Boots the Pixel 3a on both the
-Halium 14.0 and 16.0 GSIs over its stock Android 12.1 vendor, `systemctl
-is-system-running = running`, 0 failed units.
+One universal arm64 rootfs, no kernel, no GSI baked in; device machines build only their
+kernel and boot image (proven first on sargo, see device-sargo.md).
 
 ```
 PREFERRED_PROVIDER_virtual/kernel = "linux-dummy"   # no kernel in the rootfs build
@@ -114,9 +110,18 @@ find tmp/deploy/ipk -mindepth 1 -maxdepth 1 -type d ! -name 'all' ! -name 'aarch
 
 Anything landing in a `halium-arm64/` feed dir is a bug — move it to the adaptation repo.
 
-## GKI device machines (bluejay / panther pattern, 4 Sep 2026)
+**`MACHINE_FEATURES`-gated packages never reach the generic rootfs.** A packagegroup's
+`contains_any('MACHINE_FEATURES', ...)` is evaluated for the machine that builds the
+rootfs, which is `halium-arm64`; a feature set in a device machine that builds only a
+boot image (q25's `trackpad`, athena's `keyboard-touch`) can never pull its package in.
+Ship such packages on the generic image (`RDEPENDS:${PN}:append:halium-arm64`, and
+`:halium-arm`) and let the runtime decide, and grep `contains_any('MACHINE_FEATURES'` in
+the packagegroups whenever a device builds only a boot image. (Found on q25; see
+device-q25.md.)
 
-Both devices build kernel and boot images from bitbake:
+## GKI device machines (the bluejay / panther pattern)
+
+A GKI machine builds kernel and boot images from bitbake:
 
 ```
 MACHINE=bluejay bitbake luneos-bootimg-gki      # same for panther
@@ -157,15 +162,10 @@ No nyx-modules file is needed per machine: module selection lives in
 plus a ramdisk-only `init_boot` (panther, A13-launch layout). bluejay sets `"0"` and gets
 one combined `boot.img` (A12-launch layout, no init_boot partition).
 
-The bitbake initramfs is the stock `initramfs-scripts-halium` one, so the two
-hardware-diagnosed GKI initramfs bugs had to move upstream before bitbake images were
-shippable: `init.sh` now carries the dependency-ordered module loader and cmdline module
-parameters (verified byte-identical to the hand-patched `init`), and
-`0002-halium-size-userdata-from-sysfs-not-proc-partitions.patch` carries the
-userdata-resize fix. Bonus: the bitbake ramdisk was *newer* than the hand-built kits —
-it includes `0001-halium-find-the-Android-image-instead-of-assuming-whe.patch` (30 Aug),
-which fixes the "userdata image with only rootfs.img in it does not boot" case that the
-flashed-userdata install relies on. Both staging kits were re-cut from the bitbake images.
+The ramdisk is the stock `initramfs-scripts-halium` one: its `init.sh` carries the GKI
+module loader and cmdline module parameters, and its patches the userdata-resize fix and
+the "find the Android image" fix the flashed-userdata install relies on (see
+boot-images.md § Where the fixes live now). Cut flash kits from current bitbake images.
 
 ## Build commands
 
@@ -226,67 +226,89 @@ consumes `${UNPACKDIR}/system.img` in place, so re-copying keeps a re-run idempo
 - mindphone points at its 32-bit GSI through the same include, with
   `HALIUM_LUNEOS_GSI16_ARCH = "halium_arm"` and its own PV/SHA in
   `android-system-image-mindphone.bb`.
-- Published generic GSIs: `webOS-ports/halium-images` hosts them all. The date-tagged
-  `halium-luneos-20260826` release carries 9.0/11.0/13.0/14.0/16.0 `halium_arm64` (plus
-  11.0 and 16.0 `halium_arm`); later 16.0 builds are in `halium-luneos-20260910` and
-  `halium-luneos-20261005`. The 16.0 release in use is pinned once, in
+- The 16.0 GSI in use is pinned once, in
   `meta-android/recipes-core/android-system-image/halium-luneos-gsi-16.inc`
-  (`HALIUM_LUNEOS_GSI16_PV`/`_SHA256`/`_ARCH`, weak assignments a device may override).
+  (`HALIUM_LUNEOS_GSI16_PV`/`_SHA256`/`_ARCH`, weak assignments a device may override);
+  every `android-system-image-<device>` recipe requires it. Published releases: see
+  gsi-building.md.
 
-## LXC container config
+## mount-android.sh and the LXC container
 
-Historical bugs in `meta-android/recipes-core/android-system/` and their fixes
-(`9b32def7`, plus Droidian comparisons):
+**Dynamic partitions.** From Android 10, `system`/`vendor`/`product` are logical
+partitions inside `super`, with a custom header (not LVM), mapped with `dm-linear` via
+`droidian/parse-android-dynparts`. **Retrofit is the case that matters**: a device
+launched before Android 10 and upgraded gets *retrofit* dynamic partitions — metadata on
+`system`, extents spanning `system`+`vendor`, and **no partition named `super`, ever**.
+sargo (launched on Android 9) is retrofitted from Android 10: AOSP `device/google/bonito`
+sets `PRODUCT_RETROFIT_DYNAMIC_PARTITIONS := true` from `android-10.0.0_r1`, and the
+LineageOS board config reads
 
-- `lxc.arch` is now derived from `TARGET_ARCH` (was hardcoded `armhf` — wrong on arm64,
-  but armhf targets still exist in the tree, so derive, don't flip).
-- `lxc.uts.name` corrected from `armhf` to `android`.
+```
+BOARD_SUPER_PARTITION_METADATA_DEVICE := system
+BOARD_SUPER_PARTITION_BLOCK_DEVICES   := system vendor
+```
+
+Retrofit is a device *class* (most phones were upgraded to 10/11 rather than launched on
+it). `mount-android.sh` used to gate on a `super` partition, and `parse-android-dynparts`
+refused multi-device layouts while hardcoding `argv[1]` as the device in every linear
+target; both fixed in `03508c3e`. Single-`super` is a strict subset of the retrofit path
+(`target_source` always 0), so the fix cannot regress launched-on-A10 devices.
+`tests/loopback-retrofit-test.sh` (22 assertions on loop devices with real
+device-mapper) pins the retrofit mapping and the Android 9 no-metadata behaviour (exit 0,
+no dm nodes).
+
+**Mount from systemd, not the initramfs** (Droidian's model): `mount-android.sh` runs as
+`ExecStartPre` of `android-system.service` — udev, `dmsetup` and `parse-android-dynparts`
+are unavailable in the initramfs. It:
+
+- takes the A/B slot from `/proc/bootconfig` **or** `/proc/cmdline` (Android 12+ moved it);
+- searches `by-partlabel`, `by-name`, `by-label`, `by-path`, `by-uuid`, `by-partuuid`,
+  `by-id`, trying `<name>$slot` before `<name>`;
+- maps dynamic partitions with `dmsetup create --concise` fed by `parse-android-dynparts`;
+- validates the mount by checking that `/vendor/build.prop` exists rather than assuming;
+- derives `product` and `odm` from the *vendor's* fstab once vendor is mounted;
+- strips `context=` / `trusted=` mount flags.
+
+**Container config** (`meta-android/recipes-core/android-system/`, `9b32def7`):
+
+- `lxc.arch` is derived from `TARGET_ARCH` (was hardcoded `armhf` — wrong on arm64, but
+  armhf targets still exist in the tree, so derive, don't flip); `lxc.uts.name = android`.
 - binderfs mounted on the host and bound in as optional.
 - APEX handled by UBports' `mount-apexes.py`, which pre-mounts the minimal
   runtime/art/i18n/vndk set the linker needs before the container starts. Required from
   Android 10 — libraries move into APEXes and libhybris cannot find them otherwise.
-- `/apex`, `/odm`, `/vendor_dlkm` need no container entries in LuneOS — unlike Droidian,
-  LuneOS mounts under `/android`, which *is* the container root (same inode). Droidian's
+- `/apex`, `/odm`, `/vendor_dlkm` need no container entries — unlike Droidian, LuneOS
+  mounts under `/android`, which *is* the container root (same inode). Droidian's
   reference config marks these `optional` so they cost nothing on older devices.
-- Dynamic partitions: `mount-android.sh` (ported from Droidian) runs as `ExecStartPre` of
-  `android-system.service` — not from the initramfs, where udev, `dmsetup` and
-  `parse-android-dynparts` are unavailable. It handles A/B slot from `/proc/bootconfig` or
-  `/proc/cmdline`, searches `by-partlabel`/`by-name`/`by-label`/`by-path`/`by-uuid`/
-  `by-partuuid`/`by-id` trying `<name>$slot` before `<name>`, validates the mount via
-  `/vendor/build.prop`, and maps `super` via `dmsetup create --concise` fed by
-  `parse-android-dynparts`. Retrofit dynamic partitions (metadata on `system`, extents
-  spanning `system`+`vendor`, no `super` — sargo from Android 10) are supported
-  (`03508c3e`) and covered by `tests/loopback-retrofit-test.sh` (22 assertions).
-- LXC 4.0.12 on a 4.14/arm32 kernel: legacy clone kept `CLONE_PIDFD` → `EINVAL`; patched
-  in the lxc recipe (mindphone).
 - LuneOS kernels leave `CONFIG_SYSVIPC` (hence `IPC_NS`) off, and `USER_NS` is KMI-poison
-  on MediaTek mgk (q25, mp01), so **LXC must not unshare the IPC or user namespace** — the shipped
-  `lxc-config` keeps both; `PID_NS` is available.
+  on MediaTek mgk (q25, mp01), so **LXC must not unshare the IPC or user namespace** — the
+  shipped `lxc-config` keeps both; `PID_NS` is available.
+- LXC 4.0.12 on a 4.14/arm32 kernel: legacy clone kept `CLONE_PIDFD` → `EINVAL`; patched
+  in the lxc recipe (found on mindphone).
+- **Do not enable `lxc@android.service`.** `android-system.service` starts the container
+  and is enabled via `basic.target.requires`; enabling the separate `lxc@android` unit gives
+  two units one container, and its `lxc-start` exiting "Container is already running" makes
+  systemd run its `ExecStop` and tear down the healthy one. `lxc@android.service: Failed
+  with result 'timeout'` in the journal is the tell. (Found on athena; see
+  device-athena.md.)
 
-## 32-bit arch pitfalls (mindphone)
+## 32-bit (arm) machines
 
-- The port was originally set up arm64 (arch-arm64.inc, Image.gz-dtb, qcom cmdline, arm64
-  defconfig, halium_arm64 GSI) — wrong on every count for a 32-bit-stock device
-  (`bootopt=64S3,32S1,32S1`: 64-bit SoC, 32-bit kernel + userland). Check the stock kernel
-  arch first.
-- `TARGET_ARCH=arm` + `tune-cortexa8` — same tune as hammerhead/tenderloin, so it shares
-  their halium sstate.
+- **Check the stock kernel's architecture first.** A 64-bit SoC can run a 32-bit kernel
+  and userland (`bootopt=64S3,32S1,32S1` on MediaTek); such a device needs
+  `TARGET_ARCH=arm`, a zImage, the arm defconfig and the `halium_arm` GSI. (Found on
+  mindphone, first set up arm64; see device-mindphone.md.)
+- `TARGET_ARCH=arm` + `tune-cortexa8` shares the halium sstate of hammerhead/tenderloin.
 - **The webruntime tune split:** the distro builds webruntime (Chromium) with thumb
   disabled, so it lands in `cortexa8hf-neon-halium` while everything else is
   `cortexa8t2hf-neon-halium`. `meta-luneos/conf/distro/include/defaulttunes.inc` bridges
-  the two arches per-machine via `PACKAGE_EXTRA_ARCHS` — mindphone was missing from that
-  list (tenderloin/hammerhead/mako precedent). Symptom: image build dies at wam-clang with
-  "sstate manifest could not be found". Fix: add `DEFAULTTUNE:mindphone` +
-  `PACKAGE_EXTRA_ARCHS:append:mindphone` there. Do not retune the machine — an old
-  `cortexa8hf-neon-halium` Chromium sstate predates the `INSANE_SKIP 32bit-time` change,
-  its hashes can never match, and retuning invalidates every cached task anyway.
-- Building a 4.14 BSP kernel with gcc 14/binutils 2.4x took six rounds of layer patches:
-  obsolete `#alloc` section-flag syntax in 28 arm32 asm files (backport of upstream
-  790756c7e022); `%llx` vs 32-bit `phys_addr_t`; drop `-Werror` from 30 MTK vendor
-  Makefiles; re-enable a commented-out touchscreen algorithm object needed at vmlinux
-  link; disable GSL_GESTURE + fix an unguarded u64 division; rename `constexpr` in
-  `unifdef.c` (a C23 keyword — same fix as sargo's host tools, where the host GCC now
-  defaults to `-std=gnu23`). Plus `CONFIG_FRAME_WARN=2048`.
+  the two per machine via `PACKAGE_EXTRA_ARCHS`; a new 32-bit machine must be added there
+  (`DEFAULTTUNE:<machine>` + `PACKAGE_EXTRA_ARCHS:append:<machine>`), or the image dies at
+  wam-clang with "sstate manifest could not be found". Do not retune the machine instead —
+  an old `cortexa8hf-neon-halium` Chromium sstate predates the `INSANE_SKIP 32bit-time`
+  change, its hashes can never match, and retuning invalidates every cached task anyway.
+- Old BSP kernels against gcc 14/binutils 2.4x: see kernel-porting.md for the patch
+  classes.
 
 ## Build failures worth remembering
 
@@ -308,33 +330,11 @@ Historical bugs in `meta-android/recipes-core/android-system/` and their fixes
 
 ## Device-agnostic principles
 
-When adding per-device config, prefer this order:
+When adding per-device config, follow the adaptation tiers (derive at runtime first,
+`deviceinfo` second, shipped files last) and the placeholder rule — both in
+architecture.md.
 
-- **Tier 0 — derive at runtime** (target: everything): HAL services, init gates and node
-  permissions from the container's own rc files; display density from `ro.sf.lcd_density`
-  and geometry from hwcomposer/DRM; partitions by name + `slot_suffix`; vendor API level
-  from `ro.vndk.version`, or `ro.vendor.build.version.sdk` where `ro.board.api_level` is
-  a YYYYMM date (A15+ vendors) — never `ro.build.version.release`; RIL
-  topology enumerated from hwservicemanager.
-- **Tier 1 — `deviceinfo`** (declarative, UBports/postmarketOS-compatible names:
-  `deviceinfo_codename`, `deviceinfo_bootimg_header_version`, `deviceinfo_flash_offset_*`,
-  …): only what cannot be read off a running device.
-- **Tier 2 — `sparse/` file overlay** (last resort; every file needs a stated reason it
-  cannot be derived). Applied non-destructively: overlayfs when `/proc/filesystems`
-  advertises it, bind-mounts otherwise — never copied in, or the universal rootfs stops
-  being universal. Note sargo's 4.9 kernel has no `CONFIG_OVERLAY_FS`; do not use
-  oe-core's `overlayfs-etc.bbclass` (wrong problem, reintroduces per-machine device
-  nodes).
-- **Shipped config files are placeholders, not defaults.** Device-describing values must be
-  obviously invalid (zeros, `/dev/input/PLACEHOLDER`); a plausible constant is worse than a
-  broken one. Never read a value back out of a file you generate; genuine fallbacks live in
-  the generator. (Real incidents: `luna-platform.conf` shipped `DPI=445` and
-  `50-luna-platform` read it back as a fallback; `nyx.conf` shipped sargo's key nodes;
-  `surface-manager.env` shipped sargo's touchscreen node.)
-- An unknown device must still boot to a usable UI from Tier 0 alone.
-
-
-## Build-tree traps after the build directory was cleaned (4 Oct 2026)
+## Build-tree traps after the build directory was cleaned
 
 - **Export `DISTRO=luneos`** (`setup-local` does). Without it `meta-luneui`'s mesa
   patches live in a `luneos/` override directory that the `nativesdk` variant does

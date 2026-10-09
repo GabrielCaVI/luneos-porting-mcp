@@ -95,13 +95,33 @@ Against `Halium/android_device_halium_halium_arm64` at `8dbc6dc` (tip of `halium
 | ship the VNDK 32 snapshot for Android 12.1 vendors | the 16 device tree shipped VNDK 34 alone; sargo's vendor needs 32 |
 | ship uncompressed APEXes (`PRODUCT_COMPRESSED_APEX := false`) | `mount-apexes.py` cannot mount a `.capex`, so conscrypt, media and media.swcodec were silently skipped on 16 |
 
-The published arm64 16.0 GSIs from `halium-luneos-20260910` on go further: `PRODUCT_EXTRA_VNDK_VERSIONS := 27 28 29 30 31 32 33 34`, every snapshot the tree carries (v30 copied in from the 14.0 tree, as for `halium_arm` below), so one arm64 GSI serves vendors from Android 8.1 to 14 and adding a device never means rebuilding the GSI. Cost ~40 MB of system.img per snapshot, uncompressed. That change is not on the `herrie/16.0` branch yet.
+## VNDK snapshot matrix
 
-Related 32-bit fix (in `device/halium/halium_arm`, not arm64): `init.halium.rc` preloaded `libselinux_stubs` from hardcoded `/system/lib64/` → vndservicemanager dead on 32-bit.
+The published arm64 16.0 GSIs from `halium-luneos-20260910` on ship every snapshot the
+tree carries (`PRODUCT_EXTRA_VNDK_VERSIONS := 27 28 29 30 31 32 33 34`, v30 copied in
+from the 14.0 tree as for `halium_arm` below), so one arm64 GSI serves vendors from
+Android 8.1 to 14 and adding a device never means rebuilding the GSI. That change is not
+yet on the `herrie/16.0` branch. Each snapshot costs ~40 MB of system.img, uncompressed.
+
+| VNDK | vendor | | VNDK | vendor |
+|---|---|---|---|---|
+| 27 | Android 8.1 | | 31 | Android 12.0 |
+| 28 | Android 9 | | 32 | Android 12.1 |
+| 29 | Android 10 | | 33 | Android 13 |
+| 30 | Android 11 | | 34 | Android 14 |
+
+linkerconfig looks the snapshot up by the vendor's exact `ro.vndk.version` (a LineageOS 20
+vendor built with `BOARD_VNDK_VERSION := current` reports 33, and v34 cannot stand in
+for it). A15+ vendors have no `ro.vndk.version` and need no snapshot (architecture.md).
+The 32-bit `halium_arm` GSI ships 30, 32 and 34. Snapshots install to
+`/system/system_ext/apex/com.android.vndk.v<N>`; check a candidate GSI with
+`debugfs -R "ls /system_ext/apex" system.img`.
 
 ## Building a 32-bit `halium_arm` GSI
 
 Needed for devices with 32-bit stock userland (mindphone: MT6739, 64-bit SoC running a 32-bit 4.14 kernel + 32-bit userland, `bootopt=64S3,32S1,32S1`).
+
+A 32-bit-specific fix (in `device/halium/halium_arm`, not arm64): `init.halium.rc` preloaded `libselinux_stubs` from hardcoded `/system/lib64/` → vndservicemanager dead on 32-bit.
 
 ### Halium 11 (the easy one — 16 minutes)
 
@@ -115,7 +135,7 @@ In the 11.0 tree, create `device/halium/halium_arm` cloned from `halium_arm64` w
 
 ### Halium 16 (three edits — 17m51s first full build)
 
-Built and verified in the 16.0 tree: system.img genuinely 32-bit-primary (vold ELF 32-bit ARM, zero `system/lib64`, 541 32-bit libs), containing `com.android.vndk.v30.apex` (48 MB) beside v32/v34 — so an Android-11 vendor is served. **Runtime-proven 13 Sep 2026: mindphone boots this 32-bit Halium 16 GSI on hardware over its Android 11 (VNDK 30) vendor** — the v30-port approach works end to end, not just at build time. The exact three edits:
+Built and verified in the 16.0 tree: system.img genuinely 32-bit-primary (vold ELF 32-bit ARM, zero `system/lib64`, 541 32-bit libs), containing `com.android.vndk.v30.apex` (48 MB) beside v32/v34 — so an Android-11 vendor is served. Runtime-proven: mindphone boots it on hardware over its Android 11 (VNDK 30) vendor (device-mindphone.md). The exact three edits:
 
 1. `device/halium/halium_arm` cloned from `halium_arm64`: BoardConfig includes `build/make/target/board/generic/BoardConfig.mk` (pure arm, armv7-a-neon, no `TARGET_2ND_ARCH`) — the ready-made `generic_arm_ab` board was **removed in 13/14**; `lineage_halium_arm.mk` drops the `core_64_bit.mk` inherit (mirror `aosp_arm.mk`); do **NOT** set `TARGET_USES_64_BIT_BINDER` (default-true + deprecated in 16).
 2. `cp -al <14.0 tree>/prebuilts/vndk/v30` into the 16.0 tree; `device.mk`: `PRODUCT_EXTRA_VNDK_VERSIONS := 30 32 34`.
@@ -129,9 +149,7 @@ TARGET_PRODUCT=lineage_halium_arm TARGET_RELEASE=bp4a TARGET_BUILD_VARIANT=userd
 
 Residual risk was whether every Halium `PRODUCT_PACKAGES` entry links 32-bit — cleared: every entry linked, core daemons (init/apexd/servicemanager) build fine. Packaged as `halium-luneos-16.0-20260827-1-halium_arm.tar.bz2` (sha256 `32da7606...2e6c`).
 
-## arm32 GSI feasibility matrix (verified against the on-disk trees, 2026-08-27)
-
-Feasibility per generation:
+## arm32 GSI feasibility per generation
 
 | Halium | arm32 feasible? | What it takes |
 |---|---|---|
@@ -146,28 +164,11 @@ Why sargo worked on 16 without any of this: its vendor is 12.1 (v32, already shi
 
 Package the built `system.img` as `halium-luneos-<ver>-<date>-N-<product>.tar.bz2`, publish it as a `webOS-ports/halium-images` release, and bump `HALIUM_LUNEOS_GSI16_PV`/`_SHA256` in `halium-luneos-gsi-16.inc` (every machine moves together; a device that must stay behind overrides the weak assignments in its own recipe, as mindphone does for `halium_arm`). The `.inc` does the sparse→ext4 conversion + `/android/{system,vendor,data,...}` symlinks and consumes `${UNPACKDIR}/system.img` in place (`mv` → `simg2img` → `rm`) — note modern trees use `${UNPACKDIR}`, not `${WORKDIR}`. The image installs as `android-rootfs.img` (system-as-root mode of the initramfs).
 
-Example selection pattern (sargo — GSI or the old device build, stock or shipped vendor):
-
-```bitbake
-SARGO_ANDROID_SYSTEM ?= "gsi"     # or "device": the old sargo-specific Halium 9 build
-SARGO_ANDROID_VENDOR ?= "none"    # "none": mount the phone's own /vendor; "device": ship vendor.img
-
-SRC_URI = ".../${SARGO_GSI_RELEASE}/${SARGO_GSI_TARBALL};name=gsi;subdir=gsi"
-# the device tarball is fetched only when one of the two knobs asks for it
-SRC_URI += "${@d.getVar('SARGO_DEVICE_URI') if 'device' in (d.getVar('SARGO_ANDROID_SYSTEM'), d.getVar('SARGO_ANDROID_VENDOR')) else ''}"
-
-do_install:prepend() {
-    cp ${UNPACKDIR}/${SARGO_ANDROID_SYSTEM}/system.img ${UNPACKDIR}/system.img
-    rm -f ${UNPACKDIR}/vendor.img
-    if [ "${SARGO_ANDROID_VENDOR}" = "device" ]; then
-        cp ${UNPACKDIR}/device/vendor.img ${UNPACKDIR}/vendor.img
-    fi
-}
-```
+Selecting between a GSI and an old device build per machine: device-bringup-yocto.md § android-system-image recipes.
 
 Not built yet: the GSI as a standalone artifact the installer picks per device, rather than an `android-system-image-<device>` recipe in the image. With the 16.0 GSI carrying VNDK 27–34, one GSI per architecture would cover every current vendor.
 
-When bumping a machine to a newer GSI generation, also bump `PREFERRED_VERSION_android-headers-halium` (mindphone went `11.0%` → `16.0%`) and rebuild libhybris — **android-headers track the GSI, not the vendor**.
+When a machine moves to a newer GSI generation, its android-headers move with it: device-bringup-yocto.md § What a machine conf contains.
 
 ## Do not adopt Droidian's `android-system-gsi-*-bin`
 
@@ -175,7 +176,7 @@ They do not build GSIs: they re-host UBports Jenkins artifacts pinned to a job n
 
 Also do not rely on `mirrors.lolinet.com/firmware/halium/GSI` — not updated since 2020.
 
-## GSI-side fixes for legacy vendors (8 Oct 2026)
+## GSI-side fixes for legacy vendors
 
 - `system/linkerconfig` (branch luneos/sphal-vndk-legacy): let sphal link libbinder.so and libui.so from
   the VNDK APEX for VNDK 28 and 30 vendors (gralloc via libqdutils; see hal-userspace.md).

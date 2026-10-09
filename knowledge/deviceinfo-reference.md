@@ -150,7 +150,7 @@ boot-image CI.
 ## LuneOS runtime keys (read by `luneos-device-config` at boot)
 
 These are LuneOS's own additions. They live in the adaptation's `deviceinfo`
-(`/usr/share/luneos/adaptations/<codename>/deviceinfo`, shipped by the device
+(`/usr/share/luneos/adaptations/<ro.product.vendor.device>/deviceinfo`, shipped by the device
 layer's `luneos-device-config` bbappend) and are read by the generators in
 `meta-luneos/recipes-core/luneos-device-config`. Every one is **opt-in**: unset
 means "derive it" or "leave the shipped value", which is what keeps one shared
@@ -198,27 +198,25 @@ It is now `/dev/input/PLACEHOLDER`, deliberately invalid, so the failure is
 obvious rather than plausible. If you see a real `eventN` in that file, the
 rootfs predates that change and the node is not evidence of anything.
 
-**A crowded input space.** athena has seven nodes and the touchscreen is not the
-obvious one:
-
-```
-event0  qpnp_pon         power
-event1  touch_keypad     capacitive keys      <- what the old placeholder hit
-event2  stmpe_keypad     physical QWERTY
-event3  synaptics_dsx_2  touchscreen
-event4  qti-haptics      vibrator
-event5  nav_key          navigation
-event6  gpio-keys        volume
-```
-
-A node called `touch_keypad` sitting at `event1` is exactly the shape of trap
-that survives review.
+**A crowded input space.** A keyboard phone can have many input nodes, with the
+touchscreen not the obvious one — athena has seven, and its `event1` is `touch_keypad`
+(capacitive keys), exactly what the old placeholder hit (see device-athena.md). A name
+that sounds like a touch device is the shape of trap that survives review.
 
 Pin by **name**, never by number - numbering shifts with which drivers register
 on a given boot, and the code prefers names anyway
 (`deviceinfo_touchscreen_by_name`, `deviceinfo_key_devices_by_name`).
-Adaptations all ship together in the generic rootfs and are keyed by codename at
-runtime, so adding one needs no machine-specific rootfs.
+Adaptations all ship together in the generic rootfs and are selected at runtime, so
+adding one needs no machine-specific rootfs.
+
+**Adaptations are keyed by `ro.product.vendor.device`, not the codename.** On a GSI
+`ro.product.device` is the GSI's (`halium_arm64`), so `luneos-device-config` reads the
+vendor's property. Google and Xiaomi put the codename there; OnePlus does not
+(`OnePlus6T` for fajita), and an adaptation directory named after the codename is then
+never read — the log says "no adaptation for '<name>'" and the device silently runs on
+Tier 0 alone. Check `ro.product.vendor.device` on every new port and name the
+adaptation directory after it; the Yocto MACHINE keeps the codename. (Found on fajita;
+see device-fajita.md.)
 
 Before pinning, check whether the generator ran at all: the unit is
 `luneos-device-config.service`, enabled via `/etc/systemd/system/basic.target.requires`

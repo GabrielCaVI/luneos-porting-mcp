@@ -81,7 +81,7 @@ value on a live device by editing the deviceinfo key, not the generated file.
 
 ## When to flip a module back to the OW implementation
 
-**Precedent (mindphone, 2026-08-26; sargo before it): haptics.** The hybris haptics
+**Precedent: haptics (found on sargo and mindphone).** The hybris haptics
 module needs the legacy vibrator API (`vibrator_exists()` from libhardware_legacy), which
 android-headers 11.0 and newer and the 16.0 GSI no longer provide; the image build failed
 until haptics moved to the open-webOS implementation. That is now the halium default.
@@ -90,54 +90,39 @@ android-headers version because an Android API was removed, move that module to 
 `nyx-modules` side (`NYXMOD_OW_<X>` in `NYX_MODULES_REQUIRED`) rather than pinning older
 headers (the headers version must track the GSI — see device-bringup-yocto.md).
 
-## Wakeup alarms: out of /dev/alarm, out of nyx-modules-hybris, and watched
+## Wakeup alarms: timerfd, in nyx-modules, and watched
 
-The hybris system module's RTC-alarm path historically used the legacy Android
-`/dev/alarm` device, which many newer vendor kernels simply lack — tissot's
-4.9.188 has none while sargo's 4.9.124 still ships it — so every
-`android_alarm_*` call became `ioctl(-1, …)` → EBADF ("Could not open rtc
-driver. 2" at startup, "Failed to clear alarm" on every RTC watchdog tick).
-Ported (12 Sep 2026) on nyx-modules-hybris branch `herrie/alarm-dev-optional`:
-`f0f61a2` guards the ioctl paths, then `a1efcfc` moves the whole file to
-`timerfd_create(CLOCK_REALTIME_ALARM)` — the alarmtimer-backed replacement AOSP
-itself moved to — verified working on both devices. The port also fixed a
-latent timezone bug: `android_alarm_read()` used `localtime_r()` while its
-caller used `timegm()`, putting "now" one UTC offset in the future and pushing
-near-term alarms out by that much.
+The legacy Android `/dev/alarm` device is missing from many vendor kernels (tissot's
+4.9.188 has none; sargo's 4.9.124 still has it), so an RTC-alarm path built on it turns
+every call into `ioctl(-1, …)` → EBADF ("Could not open rtc driver. 2" at startup,
+"Failed to clear alarm" on every RTC watchdog tick). The alarm code therefore uses
+`timerfd_create(CLOCK_REALTIME_ALARM)`, the alarmtimer-backed replacement AOSP itself
+moved to. The port also fixed a latent timezone bug: the alarm read used `localtime_r()`
+while its caller used `timegm()`, putting "now" one UTC offset in the future.
 
-**Moved into nyx-modules (25 Sep 2026), because after that it was not Android
-code at all.** Tofee asked exactly that on webOS-ports/nyx-modules-hybris#15, and
-it checks out: the hybris system module's CMake links nothing but glib, gio, pmlog
-and nyx-lib, and the only Android left anywhere in it was the `android_` prefix on
-the alarm functions. Branches: nyx-modules `herrie/system-alarm`,
-nyx-modules-hybris `herrie/drop-system-module`.
+The system module (alarm, RTC, suspend) lives in **nyx-modules**, not nyx-modules-hybris:
+the hybris copy linked nothing but glib, gio, pmlog and nyx-lib, and the only Android
+left in it was an `android_` prefix (webOS-ports/nyx-modules-hybris#15). Lessons from the
+move that apply to any such relocation:
 
-What the move involves, and what to check when doing this kind of relocation:
-
-- **Both system modules registered the identical twelve nyx methods**, so they are
-  interchangeable at the API boundary and the swap is invisible to callers. Check
-  this before assuming two same-named modules are alternatives rather than forks.
-- **nyx-modules' `system.c` was the evolved one**: logind-based suspend with the
-  direct `/sys/power/state` path kept underneath, where the hybris copy only ever
-  had the direct path. Not two platform backends — an old copy and a new one.
-- `rtc.c` was the only genuinely forked file (18 hunks). It cost a spin fix
-  written twice in one afternoon, which is the concrete argument for not forking.
-- `util.c`/`util.h` in the hybris copy were in neither the CMake `SOURCES` nor any
-  include — dead files nobody noticed because nothing built them.
-- The switch is one line: `NYX_MODULES_REQUIRED:halium` gains `NYXMOD_OW_SYSTEM`.
-  The gate in nyx-modules-hybris was already `if(NOT NYXMOD_OW_SYSTEM)`, so that
-  repo has always stood down when nyx-modules provides a system module. **Both**
-  halium lists need it (`:halium` and `NYX_MODULES_REQUIRED_HALIUM_NO_HAPTICS`,
-  used by athene/mako/mako-halium/onyx/oxygen/sagit) before the deletion
-  lands, or those devices end up with no system module at all.
+- **Both system modules registered the identical twelve nyx methods**, so they were
+  interchangeable at the API boundary. Check this before assuming two same-named modules
+  are alternatives rather than forks.
+- **nyx-modules' `system.c` was the evolved one** (logind-based suspend with the direct
+  `/sys/power/state` path underneath); the hybris copy only had the direct path — an old
+  copy and a new one, not two platform backends.
+- `rtc.c` was the only genuinely forked file (18 hunks), and it cost a spin fix written
+  twice: the concrete argument for not forking.
+- The switch is `NYXMOD_OW_SYSTEM` in `NYX_MODULES_REQUIRED`; nyx-modules-hybris stands
+  down by itself (`if(NOT NYXMOD_OW_SYSTEM)`). **Every** halium list needs it (`:halium`
+  and `NYX_MODULES_REQUIRED_HALIUM_NO_HAPTICS`), or those machines have no system module.
 
 **Then watch the timer, do not only arm it.** The timerfd was armed and never
 read, so the only thing that could report an expiry was the RTC's own interrupt —
 and on a device whose RTC cannot be set, that never happens. `alarm.c` now takes a
 callback (`wakeup_alarm_set_callback()`, registered by `rtc.c` with the same
 function it gives `rtc_add_watch()`), drains the timer on expiry and delivers it.
-Measured on sargo: the alarm callback check failed identically with the moved
-module *and* with the pre-move one restored, and passes with the watch. Where the
+(Verified on sargo.) Where the
 RTC works, `rtc_clear_alarm()` disarms the timer before reporting its own expiry,
 so only one of the two is delivered.
 
@@ -188,54 +173,18 @@ the device advertising `EV_FF`/`FF_RUMBLE`, the headphone jack the one with
 event types instead of you triggering events by hand. Pin touchpanel/keypad values
 from that output — measured, not copy-pasted.
 
-Concrete mindphone outcomes of that verification: the keypad really was `mtk-kpd` on
-event1, but udev tagged it `ID_INPUT_KEY` only — Qt's evdevkeyboard discovery needs
-`ID_INPUT_KEYBOARD`, promoted via a udev rule (a device bring-up fix, not a nyx one, but
-found while chasing "nyx keys don't work"-shaped symptoms). The machine conf's display
-values were also fiction: 1080x2340 copy-paste vs the real 480x800@~187ppi panel.
+udev may tag a hardware keypad `ID_INPUT_KEY` only; Qt's evdevkeyboard discovery needs
+`ID_INPUT_KEYBOARD`, so promote it with a udev rule (found on mindphone; see
+device-mindphone.md). It looks like "nyx keys don't work" but is a device bring-up fix.
 
-## The placeholder rule
+## Placeholders and runtime derivation
 
-Established 2026-08-24 and directly about nyx config:
-
-> Shipped config files are placeholders, not defaults. A generic config may exist in the
-> image — the generators need something to bind-mount over — but the device-describing
-> values in it must be obviously invalid: zeros, empty lists, `/dev/input/PLACEHOLDER`.
-> A plausible constant is worse than a broken one, because it is right often enough that
-> the devices where it is wrong never announce themselves.
-
-The incident list includes nyx directly: **`nyx.conf` shipped sargo's key nodes as
-"graceful defaults"** (alongside `luna-platform.conf` shipping `DPI=445` that
-`50-luna-platform` then read back as a fallback, and `surface-manager.env` shipping
-sargo's touchscreen node). Two rules follow:
-
-1. Never read a value back out of the file you generate — it is a placeholder, not a
-   source.
-2. When a fallback is genuinely needed so an unknown device still boots, put it in the
-   generator (where it is visibly a fallback), not in the config (where it reads as a
-   measurement).
-
-Values that are not derived at all stay as working values, marked as such in the file —
-a placeholder there would break something with nothing to replace it.
-
-## Where nyx config is heading: runtime derivation
-
-The target architecture (`luneos-device-config`, see architecture.md) applies to nyx
-config exactly as to display geometry:
-
-- **Tier 0 (derive at runtime)** — the goal for everything: input nodes, battery/charger
-  sysfs paths and the like should come off the running device (udev/sysfs enumeration,
-  Android props, the vendor's own init rc files) rather than shipping per device.
-  `luneos-device-config` resolves `/usr/share/luneos/adaptations/<codename>/` and overlays
-  it over `/etc` + `/usr/lib/luneos/device/` via bind-mounts (overlayfs when the kernel
-  has it), re-evaluated every boot so the rootfs stays universal.
-- **Tier 1 (`deviceinfo`)** — only what cannot be read off a running device.
-- **Tier 2 (sparse file overlay)** — last resort; adding a file requires stating why it
-  cannot be derived. A per-device `nyx.conf` fragment is Tier 2 debt, to be repaid.
-
-Related runtime-derivation fixes that landed during mindphone bring-up: the
-`luneos-device-config` lshal per-call watchdog (lshal hangs forever on an unresponsive
-HAL and blocked the whole boot queue), and the panel-size fbdev fallback reading
+Shipped nyx config follows the placeholder rule and the adaptation tiers in
+architecture.md: `nyx.conf` once shipped sargo's key nodes as "graceful defaults", which
+is exactly the plausible constant the rule forbids. A per-device `nyx.conf` fragment is
+Tier 2 debt. Two `luneos-device-config` details found during the mindphone bring-up:
+`lshal` needs a per-call watchdog (it hangs forever on an unresponsive HAL and blocked
+the whole boot queue), and the fbdev panel-size fallback must read
 `/sys/class/graphics/fb0/modes` — **not** `fb0/mode`, which empties once the compositor
 owns the panel.
 
@@ -263,17 +212,22 @@ Check `cat <supply>/online` whenever charging detection is wrong.
 4. Do not invent plausible values for hardware you have not probed — obviously-invalid
    placeholders beat plausible constants.
 
-## Samsung devices: rear_flash torch and sec-battery's charge_now (8 Oct 2026)
+## Torch backends and battery readings that are not what they say
 
-- **Torch.** Samsung's flash drivers (rt5033 on the Galaxy A3 (2015), sm5701, sm5705, ...) offer the torch
-  only as `/sys/class/camera/flash/rear_flash` — write-only, "1" on, "0" off — and register no LED class
-  device. nyx's led_torch module has a fourth backend for it (after MediaTek and the LED class): used where
-  the LED class has nothing and rear_flash is writable, or where `[module.led] torch_path` names a plain
-  file. It reports what it last set and switches off on close. luneos-device-config's 35-torch-app counts
-  rear_flash as a torch, so the Flashlight app is not hidden. Fix it in nyx, not per kernel driver.
-- **charge_now is not a charge on sec-battery**: `sec_battery.c` returns `battery->charging_mode` (1) for
-  POWER_SUPPLY_PROP_CHARGE_NOW, so the battery app showed 0 mAh. nyx treats a charge_now under 1 mAh beside
-  a percentage above zero as no reading: stated full capacity times the percentage, else -1.
-- **Capacity keys:** `design_capacity_mah` is only taken together with `full_capacity_mah`; for a gauge
-  that cannot measure the full charge, give the pack's rating for both (a LineageOS device tree's
-  power_profile.xml has it as `battery.capacity`).
+- **`rear_flash` torch.** Samsung flash drivers (rt5033, sm5701, sm5705, ...) offer the
+  torch only as `/sys/class/camera/flash/rear_flash` — write-only, "1" on, "0" off — and
+  register no LED class device. nyx's led_torch module has a backend for it (after
+  MediaTek and the LED class): used where the LED class has nothing and rear_flash is
+  writable, or where `[module.led] torch_path` names a plain file. It reports what it
+  last set and switches off on close; luneos-device-config's 35-torch-app counts
+  rear_flash as a torch. Fix torches in nyx, not per kernel driver.
+- **`charge_now` may not be a charge**: Samsung's `sec_battery.c` returns
+  `battery->charging_mode` (1) for POWER_SUPPLY_PROP_CHARGE_NOW. nyx treats a charge_now
+  under 1 mAh beside a percentage above zero as no reading: stated full capacity times
+  the percentage, else -1.
+- **Capacity keys:** `design_capacity_mah` is only taken together with
+  `full_capacity_mah`; for a gauge that cannot measure the full charge, give the pack's
+  rating for both (a LineageOS device tree's power_profile.xml has it as
+  `battery.capacity`).
+
+(Found on the Galaxy A3 (2015); see device-a3-2015-halium.md.)
