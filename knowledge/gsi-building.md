@@ -263,8 +263,10 @@ devices):
    AllocatorHal: failed to get gralloc module
    ComposerHal: failed to open hwcomposer device
    ```
-   Rule, no log needed: **if the vendor image has `lib/libhwui.so` or `lib/libpdfium.so`, set
-   `HALIUM_LEGACY_EXTRA_LIBS = "libft2.so"`** (the old `/system/lib` has it, ~600 KB). Check it before
+   Since halium-legacy-vendor revision 32 the converter does this itself: `libft2.so` is no longer counted as
+   provided, so anything that needs it pulls the old `/system/lib` copy (~600 KB) and `HALIUM_LEGACY_EXTRA_LIBS`
+   need not name it. On an older converter the rule is: **if the vendor image has `lib/libhwui.so` or
+   `lib/libpdfium.so`, set `HALIUM_LEGACY_EXTRA_LIBS = "libft2.so"`**. Check it before
    the first boot: `for f in vendor/lib/*.so; do readelf -d $f | grep -q 'NEEDED.*libft2' && echo $f; done`
    lists who wants it (the result is `libhwui.so`, `libpdfium.so`, or both).
    The same fix as the framework-symbol shims in item 3 usually goes with it for the same libraries
