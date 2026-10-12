@@ -12,7 +12,7 @@ but for LuneOS device porting rather than legacy webOS app development.
 The knowledge was distilled from real ports and bring-ups: Pixels on GKI
 (bluejay, panther) and pre-GKI kernels (sargo, sunfish, bramble), MediaTek phones
 and tablets (mindphone, q25, mp01, radon, titanpocket, sm-t220), and Qualcomm
-Tier B devices from 2015 to 2020 (a3-2015-halium, bullhead, athena, fajita, surya). The
+Tier B devices from 2015 to 2020 (a3-2015-halium, goyavewifi, bullhead, athena, fajita, surya). The
 device index in `architecture` lists each with its tier, kernel, vendor, GSI and
 status; every device has its own `device-<codename>` topic. Material from the
 UBports, Droidian and Sailfish OS (HADK) porting guides is integrated where it
