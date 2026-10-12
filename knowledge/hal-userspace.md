@@ -97,6 +97,21 @@ every other A12+ GSI.
   G68 in Aug 2026 but has no G78 model entry yet — "small mesa patch + GPU DT plumbing"
   away, unaccelerated today.
 
+### Adreno 4xx on a 3.10 kgsl: Chromium's low-4GB reservation
+
+The 3.10 kgsl of the Adreno 4xx (Nexus 5X, msm8992) can only place a CPU-mapped GPU buffer below
+`KGSL_SVM_UPPER_BOUND` (0xc0000000 - 16 MB): the GPU addresses 32 bits. Chromium 151's PartitionAlloc
+reserves the whole first 4 GB + 1 MB of every 64-bit Linux process as an inaccessible "zero segment"
+(`enable_user_space_zero_segment`, on by default; V8's sandbox reserves the same range itself when
+PartitionAlloc has not). So every GPU mapping in WebAppMgr and the browser fails, EGL never
+initialises and the in-process GPU thread crashes on every start, while the compositor (no Chromium)
+draws fine. Tells: `kgsl_get_unmapped_area| pid N ... failed error -12` in dmesg, and
+`00010000-100100000 ---p ... [anon:partition_alloc]` as the first line of WebAppMgr's
+`/proc/<pid>/maps`. meta-luneos patch `0002-Halium-let-a-device-opt-out-of-the-low-4GB-reservation`
+skips both reservations when `/etc/webruntime/no-low-4gb-reservation` exists; a machine that needs it
+installs that file. Expect it on any 64-bit device whose GPU driver keeps an SVM range below 4 GB
+(older kgsl for 32-bit-address Adreno parts); newer kgsl puts 64-bit processes' SVM above 4 GB.
+
 ## Derive, don't ship: the start-android-hals mechanism
 
 `start-android-hals.sh` implements the derivations in architecture.md § The adaptation
@@ -407,6 +422,18 @@ crash and then gives up, taking `audiod` with it.
 so the *runtime* dependency on the package that ships it must exist, not only a build-time
 `DEPENDS`.
 
+**Headphone jack.** pulseaudio-modules-droid follows the jack in one of two ways: `droid-extcon`
+(an `h2w` switch under `/sys/class/switch`) or, when there is none, `droid-extevdev`, which opens
+the first `/dev/input/event*` with `SW_HEADPHONE_INSERT` (the codec's "Headset Jack" input) once,
+when the card is created, and marks the headphone/headset ports available. That input belongs to
+group `input`, from host udev and the container's ueventd alike, so `pulse` must be in it. It was
+not on any Halium machine until meta-luneos added it in `pulseaudio_%.bbappend` (Oct 2026): the
+droid module recipes' `GROUPMEMS_PARAM` was never applied (device-bringup-yocto.md § Build failures,
+item 6). The tell is `droid-extevdev.c: Unable to open device /dev/input/eventN, ignored:
+Permission denied` for every node. Check on a device with `id pulse`, then `evtest
+/dev/input/eventN` while plugging in, then `pactl --server unix:/var/run/pulse/native list cards`
+for the ports' availability.
+
 SFOS splits its pulseaudio plugin by Android base — `pulseaudio-modules-droid-jb2q` for
 ≤10 vs `pulseaudio-modules-droid` for ≥11 — worth knowing when borrowing their configs.
 Debug the daemon directly with `pulseaudio -v`.
@@ -504,6 +531,20 @@ vhci `hci0` for BlueZ.
   `/var/lib/systemd/rfkill/` on every boot, so a state saved while blocked re-blocks after
   any manual `rfkill unblock` (`Failed to set mode: Blocked through rfkill (0x12)`).
 - **Samsung EFS address:** see § Legacy Qualcomm vendors below.
+- **A vendor with no BT service at all.** A LineageOS vendor whose manifest declares
+  `android.hardware.bluetooth@1.0` passthrough loaded the HAL in its Bluetooth app; ship the AOSP
+  default `android.hardware.bluetooth@1.0-service` and declare it hwbinder (gsi-building.md
+  § Before deriving).
+- **Qualcomm Rome over UART and `wcnss_filter`.** `libbt-vendor` either opens the UART
+  (`/dev/ttyHS0`) itself or asks for the filter with `wc_transport.start_hci=true`. start-android-hals
+  force-starts the vendor's disabled `start_hci_filter` regardless; with both on the UART the
+  filter eats the controller's answers (`WCNSS_FILTER: handle_soc_events: Unexpected data format`),
+  `bt_vendor` waits for ever on `read_vs_hci_event` after `EDL_PATCH_VER_REQ_CMD`, initialize fails
+  and bluebinder times out. Then each `close()` aborts the service in
+  `BluetoothHci::close()` → `std::__throw_bad_function_call` (close before a successful
+  initialize), and hwservicemanager restarts it in a loop. Fix: `start_hci_filter` in
+  `deviceinfo_android_skip_services` (an rc override does not stop the script; device-bringup-yocto.md
+  § Shipping fixes through /odm). Found on bullhead.
 
 ## Sensors
 
@@ -511,6 +552,19 @@ sensorfw talks to the HIDL sensors HAL; sensorfwd also has an AIDL backend, not 
 working on any port. On surya's A15 vendor only the AIDL multihal service exists, and the
 failure there matched the dated-`ApiLevel` problem above — retest after the gbinder fix
 before stubbing anything (device-surya.md).
+
+**Passthrough-only sensors HAL.** With the HIDL backend sensorfwd asks hwservicemanager for
+`android.hardware.sensors@2.1`, `2.0` and `1.0` `ISensors/default` ("Could not find …" for each in the
+journal) and exits when none is registered. A LineageOS vendor that declares `@1.0` passthrough has
+only the impl (`/vendor/lib*/hw/android.hardware.sensors@1.0-impl.so`); ship the AOSP default
+`android.hardware.sensors@1.0-service`, declare it hwbinder, and give it the groups for
+`/dev/uinput` (`uhid` in the GSI's ueventd, `bluetooth` from host udev) if the HAL opens it.
+**Sensor hubs that are flashed at boot** (Nexus 5X nanohub: the vendor's `flash-nanohub-fw` runs
+`nanoapp_cmd download`, 50 s in one boot when it had firmware to load): the HAL gives up if it starts while the hub is busy.
+Start the service from `on property:init.svc.flash-nanohub-fw=stopped`, in a class start-android-hals
+does not force-start, and leave out the rc's `interface` line so a lookup cannot start it early. Also
+check the flasher's rc itself: the Nexus 5X's has no `user`, which Android 16 init rejects, so the hub
+was never flashed and the kernel logged `nanohub_kthread: err_cnt` every second.
 
 ## Legacy Qualcomm vendors on the 16.0 GSI
 
@@ -579,6 +633,38 @@ wrapper). `android-system-image-legacy-a9-shim.inc` ships just that shim. Scan a
   no longer knows `net_bt_stack` ("Unable to decode GID"), and the whole override is then dropped.
 - bluebinder_post.sh reads that property's path on the host; bluebinder patch 0004 (meta-luneos) falls
   back to /android<path>.
+
+### A LineageOS 21 vendor without VNDK (bullhead, msm8992)
+
+Found on bullhead (device-bullhead.md): a LineageOS 21 vendor built with `RELEASE_DEPRECATE_VNDK`
+(no `ro.vndk.version`, its own libbinder/libhidlbase, LLNDK only from the GSI) under the arm64 16.0
+GSI. The derive-time checks are in gsi-building.md § Before deriving; the per-subsystem results:
+
+- **Camera.** `mm-qcamera-daemon` (32-bit) needs `libicu.so` through `libharfbuzz_ng.so`, and the
+  provider's `camera.msm8992.so` → `libgui.so` needs the system libbinder (`PermissionCache`). Both
+  services got a private directory of LineageOS 21's own `/system/lib` libraries (libbinder,
+  libstagefright_foundation, libprocessgroup, libsqlite), its i18n APEX's ICU libraries and the GSI's
+  `libdl_android.so`, through `setenv LD_LIBRARY_PATH`, plus the daemon's LineageOS shims
+  (`liboemcamera.so|libshim_sensor.so`, `mm-qcamera-daemon|libc_mutexdestroy_shim.so`) through
+  `LD_PRELOAD`. The HAL then streamed (4032x3024, AF, face detection). On the host side libdroidmedia
+  needs the media APEXes mounted (`/etc/android-host-apexes`) and
+  `libcom.android.media.swcodec.apexcodecs.so` linked from `/odm/lib64` (from `/odm/lib` on 32-bit),
+  as on hammerhead; without them `library "libcom.android.media.swcodec.apexcodecs.so" not found`.
+- **RIL, ATFWD-daemon, cnd.** LineageOS shims (`libril-qc-qmi-1.so|libaudioclient_shim.so`,
+  `ATFWD-daemon|libshim_dpmframework.so`, `libcne.so|libshim_dpmframework.so`). The audioclient shim
+  pulls the vendor's libaudioclient and libmediautils, which want `checkCallingPermission` from the
+  system libbinder: rild needs LineageOS's 64-bit system libbinder in a private directory too. The
+  vendor's `cnd` has no `user` and is rejected by Android 16 init.
+- **lmkd on a 3.x kernel** aborts in a static constructor of `libmemevents` (BPF memory events) before
+  `main`, every time, and init restarts it every 5 s (`init.svc_debug.no_fatal.lmkd` only stops the
+  reboot). LuneOS runs no framework for it to serve: stop it from
+  `on property:init.svc.lmkd=restarting` (an `/odm` override of this system service is refused).
+- **Wi-Fi, qcacld-2.0 built in.** Like prima it waits for `sta` in
+  `/sys/module/wlan/parameters/fwpath`, which Android's Wi-Fi HAL writes; `wlan-dynamic-start`
+  (meta-luneos) writes it when there is no `/dev/wlan` and the `cnss` platform driver is bound. Scans
+  then work but every connect to a PMF-capable AP fails after 5 s (`connection failed with <bssid>
+  result:70 and Status:9` = `eCSR_ROAM_RESULT_SCAN_FOR_SSID_FAILURE`, `CTRL-EVENT-ASSOC-REJECT`):
+  kernel-porting.md § Legacy 3.x kernels has the cause and the one-line fix.
 
 ## webOS media server (umediaserver) on Halium: three independent ways to play nothing
 

@@ -206,6 +206,53 @@ hwbinder rather than passthrough (composer and allocator by default), and `/syst
 tuning to carry into the vendor's build.prop. The machine conf chooses the Android it boots
 with `<DEVICE>_ANDROID_SYSTEM` (`"gsi"` or `"device"`).
 
+### Before deriving: read what the old Android did for its vendor
+
+The class closes over `DT_NEEDED` **by name**, from the vendor, the VNDK/LLNDK and the old
+`/system/lib`. Four things it does not find on its own; each cost a test round on bullhead
+(LineageOS 21 vendor, device-bullhead.md). Check them on every LineageOS-derived vendor before the
+first derive:
+
+1. **LineageOS's linker shims.** LineageOS builds `TARGET_LD_SHIM_LIBS` into its own linker, which
+   loads a shim next to the library that needs it; the GSI's linker does not. Read the map out of the
+   device image's linker (in the runtime APEX from LineageOS 17 on, `/system/bin/linker64` before):
+   ```sh
+   debugfs -R 'dump /system/apex/com.android.runtime.apex rt.apex' system.img
+   unzip -o rt.apex apex_payload.img
+   debugfs -R 'dump /bin/linker64 linker64' apex_payload.img     # and /bin/linker for 32-bit
+   strings -n 6 linker64 | grep '\.so|'
+   ```
+   It prints `<library>|<shim>:<library>|<shim>:…`. Each pair goes into `HALIUM_LEGACY_LD_SHIMS`
+   (file names). Both ends must be in the vendor image, so shims that live in `/system/lib*` (bullhead:
+   `libaudioclient_shim.so`, `libshim_sensor.so`, `libshim_drm.so`) also go into
+   `HALIUM_LEGACY_EXTRA_LIBS`. Without them the blobs fail to link: `cannot locate symbol
+   "strdup8to16"` (ATFWD-daemon, libcne), `"android::AudioSystem::setErrorCallback"` (the RIL).
+2. **Passthrough HALs that LuneOS reaches over hwbinder.** `grep -B1 -A2 passthrough
+   vendor/etc/vintf/manifest.xml`. A LineageOS vendor often declares sensors, Bluetooth, the camera
+   provider, vibrator, … passthrough and ships no service: its system_server, Bluetooth app or
+   cameraserver loaded them in-process. sensorfw, bluebinder and droidmedia only talk hwbinder. For
+   each one a LuneOS consumer needs, ship a service binary (AOSP
+   `hardware/interfaces/<hal>/<version>/default`, built for the vendor's VNDK level, or one from
+   another of our builds), an rc, and list the HAL in `HALIUM_LEGACY_BINDERIZED_HALS`. Without the
+   manifest change the service starts and exits at once: "Service … must be in VINTF manifest in
+   order to register/get".
+3. **Symbols, not just names.** A vendor built without VNDK (LineageOS 21, `RELEASE_DEPRECATE_VNDK`)
+   carries its own `libbinder.so`, `libutils.so`, … and the GSI's linkerconfig gives it the LLNDK only.
+   A blob linked against the **system** variant of such a library then fails on a symbol although the
+   name resolves: the camera HAL's `libgui.so` and the RIL's `libmediautils.so` want
+   `PermissionCache`/`checkCallingPermission`, which only the system build of libbinder has. Walk each
+   daemon's whole load tree and check every undefined symbol (tools.md § fullres.py), not only
+   `DT_NEEDED`.
+4. **Libraries that moved into an APEX.** From LineageOS 17 on ICU (`libicu.so`, `libicuuc.so`,
+   `libicui18n.so`, `libandroidicu.so`) lives in the i18n APEX, not `/system/lib`, so the closure
+   finds nothing for a blob that needs it (bullhead: `libharfbuzz_ng.so` under `mm-qcamera-daemon`,
+   `library "libicu.so" not found`). Take them from the old image's `com.android.i18n` APEX payload.
+
+For 3 and 4 the fix belongs to the daemon that needs it: putting LineageOS's system libbinder into
+`/vendor/lib*` would replace it for every vendor process. Give that daemon a private directory and
+`setenv LD_LIBRARY_PATH` in an rc `override` (device-bringup-yocto.md § Shipping fixes through
+/odm).
+
 A converted image can be published next to the GSI as `<machine>-vendor.img` in the same
 `halium-images` release; a recipe that sets `HALIUM_LEGACY_VENDOR_SHA256` then fetches it as is
 instead of deriving it (sm-t520 does). Such a device must use the GSI unmodified, or the GSI it

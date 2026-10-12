@@ -296,6 +296,14 @@ const PROMPTS = {
             "module params) and a debug variant with enable_adb.\n" +
             "5. Create the Yocto machine (nyx module selection lives in nyx-modules-machines.inc) and the GSI pin " +
             "for the right GSI generation (match vendor API level).\n" +
+            "5a. Legacy vendor converted by halium-legacy-vendor (e.g. a LineageOS build): before the first derive, " +
+            "run the checklist in gsi-building § Before deriving: read LineageOS's linker shim map " +
+            "(TARGET_LD_SHIM_LIBS) into HALIUM_LEGACY_LD_SHIMS and carry /system shims with HALIUM_LEGACY_EXTRA_LIBS; " +
+            "list passthrough HALs that sensorfw, bluebinder or droidmedia need and ship a service plus " +
+            "HALIUM_LEGACY_BINDERIZED_HALS for each; run the full-tree symbol check (tools § fullres.py) on every " +
+            "vendor daemon; fetch APEX-resident libraries such as ICU. Then list the vendor services " +
+            "start-android-hals would force-start (disabled ones included) and decide which belong in " +
+            "deviceinfo_android_skip_services.\n" +
             "6. Assemble the flash kit and install; then follow the debugging playbook for bring-up.",
         },
       },

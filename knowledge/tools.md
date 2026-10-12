@@ -237,6 +237,72 @@ Drop `-r` for write access. Build: cmake + OpenSSL
 (https://github.com/droidian/parse-android-dynparts). On-device usage (mounting
 the real super at boot) is covered in architecture.md/debugging.md.
 
+## fullres.py — will this vendor daemon link under the GSI?
+
+**Purpose:** host-side, before a test round: load a vendor binary's whole tree the way bionic does
+(preloads, the binary, its `DT_NEEDED` breadth-first, then dlopen()ed libraries) from a search path
+you give it, and check **every** loaded object's undefined symbols against everything loaded. A
+by-name walk is not enough: on bullhead it said "all resolved" for rild while the phone failed on
+`checkCallingPermission`, three libraries down (gsi-building.md § Before deriving).
+
+**Search path** for a vendor process on the 16.0 GSI: a private directory if you plan one,
+`vendor/lib*` and `vendor/lib*/hw` of the vendor image, then a directory of the GSI's **LLNDK**
+libraries only (the names in `/system/etc/llndk.libraries.*.txt`, from the GSI's `/system/lib*`) plus
+bionic from its runtime APEX (`lib*/bionic/`). Unresolved symbols reported *inside* an LLNDK library
+are noise (the real linker resolves those in the system namespace); the ones in vendor libraries are
+the findings. `memcpy` & co. are IFUNCs and are skipped.
+
+```python
+# fullres.py <dirs, colon-separated, in search order> <exe> [preload ...] [-- dlopened ...]
+import subprocess, sys, os
+dirs = sys.argv[1].split(':'); args = sys.argv[2:]; dl = []
+if '--' in args: i = args.index('--'); dl = args[i+1:]; args = args[:i]
+exe, pre = args[0], args[1:]
+def syms(p):
+    und, dfn = set(), set()
+    for l in subprocess.run(['nm', '-D', p], capture_output=True, text=True).stdout.splitlines():
+        t = l.split()
+        if len(t) == 2 and t[0] == 'U': und.add(t[1].split('@')[0])
+        elif len(t) == 3 and t[1] not in ('U', 'w', 'v'): dfn.add(t[2].split('@')[0])
+    return und, dfn
+def needed(p):
+    o = subprocess.run(['readelf', '-d', p], capture_output=True, text=True).stdout
+    return [l.split('[')[1].split(']')[0] for l in o.splitlines() if '(NEEDED)' in l]
+def find(n):
+    return next((os.path.join(d, n) for d in dirs if os.path.exists(os.path.join(d, n))), None)
+loaded, order, missing = {}, [], []
+def load(roots):
+    q = list(roots)
+    while q:
+        p = q.pop(0); n = os.path.basename(p)
+        if n in loaded: continue
+        loaded[n] = p; order.append(p)
+        for d in needed(p):
+            if d in loaded: continue
+            f = find(d)
+            if f: q.append(f)
+            else: missing.append((d, n)); loaded[d] = None
+load(pre + [exe]); load(dl)
+defs = set().union(*(syms(p)[1] for p in order))
+ifunc = {'memcpy', 'memmove', 'memset', 'memcmp', 'memchr', 'memrchr', 'bcmp', 'strlen', 'strnlen',
+         'strcmp', 'strncmp', 'strchr', 'strrchr', 'strcpy', 'strncpy', 'stpcpy', 'stpncpy', 'strcat',
+         'strncat', 'wmemset', '__memcpy_chk', '__memset_chk', '__memmove_chk', '__strlen_chk',
+         '__strcpy_chk', '__strcat_chk', '__stpcpy_chk'}
+print('loaded', len(order), 'missing libs:', missing)
+for p in order:
+    bad = syms(p)[0] - defs - ifunc
+    if bad: print('UNRESOLVED in', os.path.basename(p), ':', sorted(bad)[:8])
+```
+
+```sh
+V=vendor/lib64
+python3 fullres.py "$V:$V/hw:llndk64" vendor/bin/hw/rild \
+    lib64/libaudioclient_shim.so -- $V/libril-qc-qmi-1.so
+```
+
+Re-run with the planned private directory first in the path; the fix is right when nothing outside
+the LLNDK is reported. *Unpublished* as a file; the code above is the tool.
+
 ## libhybris test binaries & binder-list
 
 libhybris ships per-subsystem smoke tests usable before any middleware exists:

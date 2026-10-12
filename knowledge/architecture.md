@@ -172,6 +172,7 @@ holds the detail, sources and open issues.
 | `titanpocket` | Unihertz Titan Pocket | MediaTek MT6771 (P70) | B | 4.14.186 ALPS tree | Android 11, VNDK 30 | 16.0 arm64 | boots to UI, keyboard works; audio fails |
 | `sm-t220` | Samsung Galaxy Tab A7 Lite Wi-Fi | MediaTek MT8768T | B | 4.19.191 Samsung | Android 12, VNDK 31 | 16.0 arm64 | boots; audio, media, display, touch, Wi-Fi, camera work |
 | `a3-2015-halium` | Samsung Galaxy A3 (2015) | Qualcomm MSM8916 | B, 32-bit | 3.10.108 | LineageOS 18.1, VNDK 30 | 16.0 arm | UI, modem, Wi-Fi, BT, audio, camera work |
+| `bullhead` | LG Nexus 5X | Qualcomm MSM8992 | B | 3.10.108 LineageOS (arm64) | LineageOS 21, no VNDK | 16.0 arm64 | UI, Wi-Fi, sensors, NFC work; camera HAL streams; BT and headphone jack in progress |
 | `athena` | BlackBerry KEY2 | Qualcomm SDM660 | B | 4.19.325 | LineageOS 22 (A15) | 16.0 arm64 | lock screen; display, touch, QWERTY, Wi-Fi, audio work; BT, NFC, sensors, camera broken |
 | `fajita` | OnePlus 6T | Qualcomm SDM845 | B | 4.9.337 LineageOS | LineageOS 22.2 (A15) | 16.0 arm64 | builds, verified host-side; never run on hardware |
 | `surya` | Xiaomi POCO X3 NFC | Qualcomm SM7150-AC (732G) | B | 4.14.356 LineageOS | /e/OS A15 | 16.0 arm64 | one on-device logcat (container up, sensors broken); otherwise untested |

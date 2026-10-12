@@ -620,6 +620,18 @@ Look up what gates that command in `hci_core.c` (`hci_init*_req`) and mask the b
 | pulseaudio busy while silent; sink RUNNING forever | Uncorked stream (Qt EOS bug) | Stage 5 §3 |
 | Idle flash writes high | Kernel driver debug_mask / log spam | Stage 5 §4 |
 | Journal of a crashed boot ends after a few seconds | journald flushes every 5 min by default | tooling appendix |
+| `CANNOT LINK EXECUTABLE … cannot locate symbol "strdup8to16"` (or similar) from a LineageOS vendor blob | A LineageOS linker shim the GSI's linker does not load | gsi-building.md § Before deriving, item 1 |
+| `Service android.hardware.<hal>@x::I…/default must be in VINTF manifest in order to register/get` | The vendor declares the HAL passthrough | gsi-building.md § Before deriving, item 2; device-bringup-yocto.md § Shipping fixes through /odm |
+| sensorfwd logs "Could not find 'android.hardware.sensors@1.0::ISensors/default'" and exits | No sensors service on a passthrough-only vendor | hal-userspace.md § Sensors |
+| The library name resolves, a symbol does not (`PermissionCache`, `checkCallingPermission`) | A blob linked against the system libbinder; the vendor has its own | gsi-building.md § Before deriving, item 3 |
+| `library "libicu.so" not found` | ICU is in the i18n APEX, not /system/lib | gsi-building.md § Before deriving, item 4 |
+| `service 'X' overrides another service across the treble boundary` | /odm or /vendor override of a system service | device-bringup-yocto.md § Shipping fixes through /odm |
+| `No user specified for service 'X', so it would have been root` | Old vendor rc; Android 16 init drops the service | add `user` in an override |
+| Bluetooth: `BluetoothHci::close()` → `__throw_bad_function_call` abort loop, bluebinder times out | initialize never finished; on Qualcomm UART parts a force-started `wcnss_filter` | hal-userspace.md § Bluetooth |
+| `droid-extevdev.c: Unable to open device /dev/input/eventN … Permission denied`; headphones ignored | `pulse` not in group `input` | hal-userspace.md § Audio |
+| `kgsl_get_unmapped_area … failed error -12`; WebAppMgr's GPU thread crashes on every start | Chromium's low-4GB reservation vs a 32-bit-address Adreno | hal-userspace.md § Adreno 4xx on a 3.10 kgsl |
+| Wi-Fi scans, every connect fails after 5 s with `result:70 and Status:9` (qcacld) | MFP optional vs `WIPHY_FLAG_SUPPORTS_FW_ROAM` | kernel-porting.md § Legacy 3.x kernels |
+| `init: Service 'lmkd' … received SIGABRT` every 5 s on a 3.x kernel | libmemevents needs BPF | hal-userspace.md § A LineageOS 21 vendor without VNDK |
 
 ## Tooling appendix
 
