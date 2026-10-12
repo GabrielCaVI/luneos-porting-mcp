@@ -293,6 +293,41 @@ are unavailable in the initramfs. It:
   with result 'timeout'` in the journal is the tell. (Found on athena; see
   device-athena.md.)
 
+## Shipping fixes through /odm
+
+When the vendor image is already published (`HALIUM_LEGACY_VENDOR_SHA256`), a fix that belongs on the
+Android side does not need a new vendor image: on a device with no odm partition `mount-android.sh`
+binds the host's own `/odm` directory as the container's `/odm` (`lxc-config`:
+`lxc.mount.entry = /odm odm bind bind,optional`). A machine recipe installs into `${D}/odm`
+(precedent: `android-system-image-legacy-a9-services.inc`; bullhead's
+`android-system-image-bullhead-halium.bb` ships binaries, libraries, rc files and a VINTF fragment
+this way, with a SHA256SUMS the recipe checks):
+
+- `/odm/bin/hw/<service>`: a HAL service the vendor lacks.
+- `/odm/lib*/<name>`: the bionic default search path includes `/odm/lib*` **ahead of** `/vendor/lib*`,
+  so only libraries no vendor process should see differently. A library that must override the
+  vendor's copy for one daemon goes into a private directory (`/odm/lib64/<daemon>/`) used through
+  `setenv LD_LIBRARY_PATH`.
+- `/odm/etc/init/*.rc`: Android init reads it after `/vendor/etc/init`, so `override` replaces a
+  vendor service (add `setenv LD_PRELOAD`/`LD_LIBRARY_PATH`, groups, or a class). Two limits:
+  - init refuses an `/odm` override of a **system** service ("overrides another service across the
+    treble boundary", e.g. `lmkd`). Act on it from an `on property:init.svc.<name>=…` trigger instead.
+  - `start-android-hals.sh` decides what to force-start by reading the rc **files**, not init's merged
+    result, so changing a vendor service's class in an override does not keep it from being started.
+    Use `deviceinfo_android_skip_services` for that, and give new services of your own a class outside
+    `hal core main late_start` when they must start later than the script would start them.
+  - A service without a `user` is rejected by this init ("No user specified … so it would have been
+    root"); an override must name one.
+- `/odm/etc/vintf/manifest/*.xml`: a manifest fragment with `<hal format="hidl" override="true">`
+  replaces the vendor's entry, e.g. to declare a passthrough-only HAL hwbinder once a service for it
+  is shipped.
+
+SELinux is not enforced in the container (`selinux: SELinux is disabled, skipping restorecon`), so the
+unlabelled host files are no obstacle. Packaging such a directory: `INSANE_SKIP:${PN} += "arch
+already-stripped ldflags textrel dev-so file-rdeps"` for prebuilt Android ELFs, and
+`EXCLUDE_FROM_SHLIBS = "1"` once two private directories carry the same soname (else do_package:
+"Multiple shlib providers for libbinder.so"; halium-legacy-shim does the same).
+
 ## 32-bit (arm) machines
 
 - **Check the stock kernel's architecture first.** A 64-bit SoC can run a 32-bit kernel
@@ -328,6 +363,14 @@ are unavailable in the initramfs. It:
    `/dev/disk/by-partlabel/vendor$slot` instead of hardcoding `mmcblk0p*`.
 5. Kernel host tools failing on `constexpr` under C23: kernel-porting.md § Old BSP vs
    modern toolchain.
+6. `GROUPMEMS_PARAM` in a recipe that does not `inherit useradd` does nothing, silently. The
+   pulseaudio-modules-droid recipes asked for `pulse` in `input` that way (and with `-G input`,
+   which groupmems does not know) for years; pulse's groups belong in `pulseaudio_%.bbappend`
+   (`pulseaudio-server`). Check the built `/etc/group`, not the recipe.
+7. webruntime (Chromium) under a cgroup memory cap: a 90 GB `MemoryMax` OOM-killed it at
+   `-j 32`; `-j 24` peaked at 81 GB. Pass a one-off `bitbake -R <file>` with
+   `PARALLEL_MAKE:pn-webruntime-clang` rather than editing local.conf, and watch the systemd
+   unit's state, not a status file the killed build never writes.
 
 ## Device-agnostic principles
 
