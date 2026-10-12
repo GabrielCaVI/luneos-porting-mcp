@@ -211,7 +211,8 @@ with `<DEVICE>_ANDROID_SYSTEM` (`"gsi"` or `"device"`).
 The class closes over `DT_NEEDED` **by name**, from the vendor, the VNDK/LLNDK and the old
 `/system/lib`. Four things it does not find on its own; each cost a test round on bullhead
 (LineageOS 21 vendor, device-bullhead.md). Check them on every LineageOS-derived vendor before the
-first derive:
+first derive (item 5 is a fifth that every legacy vendor with framework copies needs, found on four
+devices):
 
 1. **LineageOS's linker shims.** LineageOS builds `TARGET_LD_SHIM_LIBS` into its own linker, which
    loads a shim next to the library that needs it; the GSI's linker does not. Read the map out of the
@@ -247,6 +248,27 @@ first derive:
    `libicui18n.so`, `libandroidicu.so`) lives in the i18n APEX, not `/system/lib`, so the closure
    finds nothing for a blob that needs it (bullhead: `libharfbuzz_ng.so` under `mm-qcamera-daemon`,
    `library "libicu.so" not found`). Take them from the old image's `com.android.i18n` APEX payload.
+5. **`libft2.so`: named by the LLNDK list, not handed to the vendor.** The class counts every name on
+   the GSI's LLNDK list as provided, and `libft2.so` is on it, but the vendor's linker namespace in
+   the container does not give it to a vendor library, so a name-based closure (and fullres.py with
+   the LLNDK directory in its path) says "all resolved" while the load fails. It is reached through the
+   framework copies a legacy vendor drags into `/vendor/lib`: `libhwui.so` (a3-2015, sm-t520,
+   tenderloin) or `libpdfium.so` (goyavewifi: `gralloc.sc8830.so` -> `libdither.so` ->
+   `libandroid_runtime.so` -> `libpdfium.so`). The symptom is a HAL service that exits with status 1
+   at every start and writes **nothing** to the kernel log or the journal; only the container's logcat
+   has it (debugging.md § 2.4):
+   ```
+   vndksupport: Could not load /vendor/lib/hw/gralloc.sc8830.so from default namespace: dlopen failed:
+     library "libft2.so" not found: needed by /vendor/lib/libpdfium.so
+   AllocatorHal: failed to get gralloc module
+   ComposerHal: failed to open hwcomposer device
+   ```
+   Rule, no log needed: **if the vendor image has `lib/libhwui.so` or `lib/libpdfium.so`, set
+   `HALIUM_LEGACY_EXTRA_LIBS = "libft2.so"`** (the old `/system/lib` has it, ~600 KB). Check it before
+   the first boot: `for f in vendor/lib/*.so; do readelf -d $f | grep -q 'NEEDED.*libft2' && echo $f; done`
+   lists who wants it (the result is `libhwui.so`, `libpdfium.so`, or both).
+   The same fix as the framework-symbol shims in item 3 usually goes with it for the same libraries
+   (`HALIUM_LEGACY_SHIM_TARGETS`, hal-userspace.md § Display: three gaps).
 
 For 3 and 4 the fix belongs to the daemon that needs it: putting LineageOS's system libbinder into
 `/vendor/lib*` would replace it for every vendor process. Give that daemon a private directory and

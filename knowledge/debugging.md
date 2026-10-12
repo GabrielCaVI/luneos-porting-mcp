@@ -625,6 +625,7 @@ Look up what gates that command in `hci_core.c` (`hci_init*_req`) and mask the b
 | sensorfwd logs "Could not find 'android.hardware.sensors@1.0::ISensors/default'" and exits | No sensors service on a passthrough-only vendor | hal-userspace.md § Sensors |
 | The library name resolves, a symbol does not (`PermissionCache`, `checkCallingPermission`) | A blob linked against the system libbinder; the vendor has its own | gsi-building.md § Before deriving, item 3 |
 | `library "libicu.so" not found` | ICU is in the i18n APEX, not /system/lib | gsi-building.md § Before deriving, item 4 |
+| Allocator and composer HAL services (`vendor.gralloc-2-0`, `vendor.hwcomposer-2-1`) exit status 1 at every start, nothing in dmesg or the journal; logcat: `vndksupport: Could not load /vendor/lib/hw/gralloc.<soc>.so … library "libft2.so" not found: needed by /vendor/lib/libpdfium.so` (or `libhwui.so`) | The LLNDK list names libft2.so, the vendor namespace does not hand it over | gsi-building.md § Before deriving, item 5 |
 | `service 'X' overrides another service across the treble boundary` | /odm or /vendor override of a system service | device-bringup-yocto.md § Shipping fixes through /odm |
 | `No user specified for service 'X', so it would have been root` | Old vendor rc; Android 16 init drops the service | add `user` in an override |
 | Bluetooth: `BluetoothHci::close()` → `__throw_bad_function_call` abort loop, bluebinder times out | initialize never finished; on Qualcomm UART parts a force-started `wcnss_filter` | hal-userspace.md § Bluetooth |

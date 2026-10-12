@@ -576,7 +576,10 @@ Qualcomm vendors.
 
 1. The composer HAL links framework copies (libhwui, libmedia) that the converter puts in /vendor/lib;
    libhwui needs **libft2.so**, which the GSI's LLNDK list names but the container's vendor linker does
-   not hand over. `HALIUM_LEGACY_EXTRA_LIBS = "libft2.so"` (sm-t520 and tenderloin do the same).
+   not hand over. `HALIUM_LEGACY_EXTRA_LIBS = "libft2.so"` (sm-t520, tenderloin and goyavewifi do the
+   same; goyavewifi reaches it through libpdfium, not libhwui, via gralloc -> libdither ->
+   libandroid_runtime, and there it showed as allocator and composer exiting 1 with no kernel log line:
+   gsi-building.md § Before deriving, item 5).
 2. Those copies want full-libbinder/libmedia symbols (`android::MetaDataBase::writeToParcel`):
    `HALIUM_LEGACY_SHIM_TARGETS` (halium-legacy-shim).
 3. **gralloc in sphal** (`gralloc.msm89xx.so` -> libqdutils -> libui, libbinder, both VNDK-core) cannot
