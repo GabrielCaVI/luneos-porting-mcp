@@ -46,15 +46,16 @@ function loadTopics() {
     // Title = first heading; description = first non-empty paragraph after it.
     const lines = content.split("\n");
     const title = (lines.find((l) => l.startsWith("# ")) || `# ${name}`).replace(/^#\s*/, "");
-    let description = "";
+    // A paragraph may be hard-wrapped: join its lines up to the next blank line.
+    const para = [];
     let pastTitle = false;
     for (const line of lines) {
-      if (line.startsWith("# ")) { pastTitle = true; continue; }
-      if (pastTitle && line.trim() && !line.startsWith("#")) {
-        description = line.trim();
-        break;
-      }
+      if (!pastTitle) { pastTitle = line.startsWith("# "); continue; }
+      if (!line.trim()) { if (para.length) break; continue; }
+      if (line.startsWith("#") && !para.length) continue;
+      para.push(line.trim());
     }
+    const description = para.join(" ");
     topics.set(name, { name, file, title, description, content });
   }
   return topics;
@@ -86,8 +87,8 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => {
       uri: "luneos://knowledge/all",
       name: "All LuneOS porting knowledge",
       description:
-        "Every LuneOS GSI/GKI porting, bring-up and debugging topic concatenated. " +
-        "Load this at session start when working on a LuneOS port.",
+        "Every LuneOS GSI/GKI porting, bring-up and debugging topic concatenated (very large). " +
+        "Prefer luneos://knowledge/architecture plus luneos_search / individual topics.",
       mimeType: "text/markdown",
     },
   ];
@@ -244,7 +245,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 const PROMPTS = {
   "luneos-session-start": {
     description:
-      "Load the complete LuneOS porting knowledge base into the session before working on LuneOS.",
+      "Orient a session on the LuneOS porting knowledge base: read the architecture overview, then pull topics as needed.",
     messages: () => [
       {
         role: "user",
@@ -252,9 +253,11 @@ const PROMPTS = {
           type: "text",
           text:
             "You are helping with LuneOS (webOS) development on Halium/GSI/GKI Android devices. " +
-            "Read the resource luneos://knowledge/all now (or call luneos_get_topic for the topics " +
-            "relevant to the task) and apply that knowledge. Key ground rules from the knowledge base: " +
-            "match the GSI to the device's vendor API level (ro.vndk.version / ro.board.api_level), " +
+            "Read luneos://knowledge/architecture now (overview, device index, glossary), then use " +
+            "luneos_search and luneos_get_topic for what the task needs; luneos://knowledge/all is " +
+            "very large, load it only when the task spans the whole base. Key ground rules: " +
+            "match the GSI to the device's vendor API level (ro.vndk.version or " +
+            "ro.vendor.build.version.sdk; ro.board.api_level is a YYYYMM date on A15+ vendors), " +
             "never to the Android version it runs; android-headers track the GSI, not the vendor; " +
             "derive device configuration at runtime instead of shipping per-device files; and when a " +
             "device does not come up, follow knowledge/debugging.md stage by stage.",
@@ -283,13 +286,15 @@ const PROMPTS = {
             "1. Classify the device: Tier A (GKI, Android 12+/kernel 5.10+) or Tier B (legacy vendor kernel); " +
             "A12-launch vs A13-launch boot layout (init_boot or not); 32-bit vs 64-bit; anti-rollback state.\n" +
             "2. Obtain and analyze the stock images (factory zip or payload.bin), extract the kernel config " +
-            "via IKCONFIG, run mer_verify_kernel_config, and plan the config fragment mindful of the " +
-            "KMI-poison list (SYSVIPC+IPC_NS, FANOTIFY, NET_L3_MASTER_DEV).\n" +
-            "3. Build the kernel (ACK/Kleaf for Tier A, vendor tree for Tier B) and verify KMI with " +
+            "via IKCONFIG, run mer_verify_kernel_config, and plan the config fragment. The KMI-poison " +
+            "list is per KMI and tree: re-derive it with kmi-crc-check.py, never copy another device's " +
+            "(seen so far: FANOTIFY, NET_L3_MASTER_DEV, CGROUP_DEVICE, USER_NS). CONFIG_SYSVIPC is not needed.\n" +
+            "3. Build the kernel (ACK for Tier A, vendor tree for Tier B; a vendor's \"GKI\" may be a derivative " +
+            "that ACK cannot match, e.g. MediaTek mgk on q25 - then build the device tree) and verify KMI with " +
             "kmi-crc-check.py before flashing anything.\n" +
             "4. Build the boot image(s) with the LuneOS initramfs (module-order-aware init, cmdline " +
             "module params) and a debug variant with enable_adb.\n" +
-            "5. Create the Yocto machine, nyx-modules <machine>.cmake, and android-system-image recipe " +
+            "5. Create the Yocto machine (nyx module selection lives in nyx-modules-machines.inc) and the GSI pin " +
             "for the right GSI generation (match vendor API level).\n" +
             "6. Assemble the flash kit and install; then follow the debugging playbook for bring-up.",
         },

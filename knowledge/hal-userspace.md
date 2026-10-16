@@ -1,12 +1,8 @@
 # Userspace HAL Stack and Per-Subsystem Bring-up
 
-LuneOS talks to Android vendor HALs through the Mer/Sailfish-lineage glue stack
-(libgbinder-based), libhybris for graphics, and a set of derivation scripts that read the
-vendor's own configuration instead of shipping per-device files. This file maps the stack,
-records the verified HIDL-vs-AIDL surface of real devices (sargo, bluejay, panther,
-mindphone), the libhybris fixes that were needed, the Mali situation, and the
-per-subsystem bring-up recipes — especially the MediaTek connectivity work — plus known
-display/UI quirks.
+How LuneOS reaches Android vendor HALs (libgbinder glue, libhybris graphics, derivation scripts) and how each subsystem was brought up.
+
+LuneOS talks to Android vendor HALs through the Mer/Sailfish-lineage glue stack (libgbinder-based), libhybris for graphics, and derivation scripts that read the vendor's own configuration instead of shipping per-device files. This file is organised by subsystem. Symptom-first triage (and the container-side traps such as `wait_for_prop`, the quoted-property gate and the ashmem node) lives in debugging.md.
 
 ## The stack
 
@@ -16,72 +12,69 @@ display/UI quirks.
 | Modem | `ofono-binder-plugin` (+ `libgbinder`, `libgbinder-radio`, `ofono-conf`) | Jolla's plugin, tracks IRadio HIDL *and* AIDL |
 | Audio | `pulseaudio-modules-droid` + `-droid-hidl` + `audiosystem-passthrough` | working (32 sinks on sargo) |
 | Bluetooth | `bluebinder` | working via HIDL `IBluetoothHci`; AIDL support unverified |
-| Sensors | `sensorfw` + `qtsensors-sensorfw-plugin` | working on HIDL; AIDL multihal unverified |
+| Sensors | `sensorfw` + `qtsensors-sensorfw-plugin` | working on HIDL; sensorfwd has an AIDL backend, not yet working on any port (surya: retest after the gbinder ApiLevel fix) |
 | GPS | geoclue bbappend → add `geoclue-providers-hybris` | to add |
 | Camera / HW video | `droidmedia` + `gst-droid` | replaces `qtubuntu-camera` (UT-era, dead); also gives HW decode to the webruntime |
-| Vibrator/LED/deviceinfo | `nyx-modules-hybris` | see nyx-modules notes; haptics needs legacy API (headers <11) |
+| Vibrator/LED/deviceinfo | `nyx-modules-hybris` | device info (and GPS); haptics comes from `nyx-modules` on halium (nyx-modules.md § When to flip a module back to the OW implementation) |
 | MTP | `mtp-server` | present |
 | Android apps | waydroid recipes | present; rides the same GSI/GKI base |
 | Android-isms | initrd hacks today; evaluate Halium's `mechanicd` | open |
 | APEX | UBports `mount-apexes.py` | required from Android 10 |
 | Dynamic partitions | `parse-android-dynparts` + ported `mount-android.sh` | required from Android 10, incl. retrofit layouts |
 
-## HIDL vs AIDL — verified per device
+## HIDL vs AIDL — read the vendor manifest
 
 The vendor manifest (`/vendor/etc/vintf/manifest/`, `/vendor/bin/hw`, `/vendor/lib64/hw`)
 is the source of truth; read it from the factory `vendor.img` before assuming anything.
+Verified surfaces so far:
 
-**bluejay (Pixel 6a, Android 16 bp4a vendor) — verified from vendor.img:**
+| device (vendor) | composer | Bluetooth | sensors | radio | details |
+|---|---|---|---|---|---|
+| bluejay (A16 bp4a) | HIDL `@2.4::IComposer` (same path as sargo) | AIDL-only `IBluetoothHci` | AIDL multihal v3 | IRadio HIDL 1.6 | device-bluejay.md |
+| panther (A16 bp4a) | **AIDL composer3 V4 only** — needs libhybris' composer3 support (PR #578, #609, merged, exposed through the unchanged `hwc2_compat_*` API; no shipping port exercises it yet) | AIDL `IBluetoothHci` | AIDL multihal V3 | AIDL `IRadio*` per slot | device-panther.md |
 
-- **Composer: HIDL `@2.4::IComposer`** — Google never IDL-migrated gs101's graphics HALs.
-  The legacy passthrough `hwcomposer.gs101.so` and `gralloc.default.so` shim still ship in
-  `/vendor/lib64/hw`. Display path is therefore *interface-identical* to the working sargo
-  setup (same GSI, same rootfs, same HIDL 2.4).
-- Gralloc: AIDL allocator v2 + `mapper.pixel.so` (stable-C mapper5) behind the scenes; the
-  A16 GSI's libui speaks gralloc5 natively and **libhybris delegates to libui since
-  PR #509 (Jan 2023)** — this is the payoff of "android-headers track the GSI, not the
-  vendor". Legacy shim exists as fallback.
-- EGL: monolithic `/vendor/lib64/egl/libGLES_mali.so` (+ `vulkan.mali.so`).
-- Audio HIDL 7.1 (pulseaudio-droid ✓), IRadio HIDL 1.6 dual-slot (ofono-binder-plugin ✓),
-  GNSS HIDL 2.1 brcm (geoclue-hybris ✓), camera provider HIDL 2.7 + media.c2 AIDL +
-  OMX 1.0 (droidmedia later ✓).
-- **Bluetooth: AIDL-only `IBluetoothHci`** — bluebinder is HIDL; AIDL support unverified.
-  BT may be the first casualty; not boot-blocking.
-- **Sensors: AIDL multihal v3** — sensorfw's hybris adaptor is HIDL-era; needs checking.
-  Not boot-blocking.
+bluebinder is HIDL; its AIDL support is unverified, so Bluetooth is the first expected
+casualty on AIDL-only vendors (not boot-blocking). Gralloc on these vendors is AIDL
+allocator v2 + a stable-C mapper; the A16 GSI's libui speaks gralloc5 natively and
+**libhybris delegates to libui since PR #509 (Jan 2023)** — the payoff of
+"android-headers track the GSI, not the vendor".
 
-**panther (Pixel 7, same bp4a build) — one genuine regression vs bluejay:**
+**Rule:** on Halium the vendor's API level picks the GSI, and the vendor manifest picks
+which HAL transport each subsystem needs — never infer either from the Android version the
+device runs. From A15, `ro.board.api_level` is a YYYYMM date; the SDK number is
+`ro.vendor.build.version.sdk` (see "Before blaming AIDL" below).
 
-- **Composer: HWC3 / AIDL `android.hardware.graphics.composer3` V4**
-  (`hwc3-default.xml`, `android.hardware.composer.hwc3-service.pixel`) — there is **no**
-  HIDL composer service on gs201. panther cannot use the sargo/bluejay-proven HIDL
-  display path; it needs libhybris' AIDL composer3 support (PR #578 Jan 2026, #609
-  Mar 2026 — merged, exposed through the unchanged `hwc2_compat_*` C API so the QPA plugin
-  needs zero changes, but **no shipping port exercises it yet**). This is the biggest
-  single risk on panther.
-- Gralloc, GPU (Mali-G710), audio HIDL 7.1, GNSS HIDL 2.1, camera HIDL 2.7: as bluejay.
-- Radio: AIDL `IRadio*` per slot (+ HIDL `@1.2::ISap`) — check ofono-binder-plugin's AIDL
-  support. Sensors AIDL multihal V3, BT AIDL `IBluetoothHci` — same caveats as bluejay.
+## Graphics
 
-**Rule:** on Halium the vendor API level (`ro.board.api_level` / `ro.vndk.version`) picks
-the GSI, and the vendor manifest picks which HAL transport each subsystem needs — never
-infer either from the Android version the device runs.
+### libhybris fixes discovered on real bring-ups
 
-## Mali under libhybris
+| Fix | Why | Where |
+|---|---|---|
+| Android 16 TLS adaptation | TLS abort in every `getprop`/`setprop` on the 16 GSI | TheKit's adaptation, carried on `Herrie82/libhybris` branch `herrie/android16-tls` |
+| `/vendor/lib{,64}/egl` added to the linker's default LD paths | GPU driver otherwise not found | same branch |
+| `MADV_WIPEONFORK` made non-fatal | `/init` aborts on kernels < 4.14 (sargo's 4.9) | `hybris-patches` `herrie/h16-fixes` |
+| Patch 0004 (mindphone): functional `__system_property_find`, `wait`, `read_callback` hooks | they were stubbed (NULL / false / unhooked), breaking property waits | layer + device |
+| Patch 0003 (mindphone): q linker missing legacy `StaticTlsLayout::finish_layout` | headers<16 builds | layer + device |
+
+The A12+ ashmem trap (`/dev/ashmem<boot_id>` must exist on the host, or the HIDL composer's
+command queue is never created) is in debugging.md § 2.4; it applies to bluejay/panther and
+every other A12+ GSI.
+
+### Mali under libhybris
 
 - **Proven in production: Valhall G57/G68** (Volla X23/Quintus/Tablet, FuriPhone FLX1,
   Jolla C2) with A12/A13 blobs.
 - **Unproven: big-Valhall G77/G78/G710** (Exynos 2100/2200, Tensor). Nobody has run
   libhybris on a Tensor device — LuneOS would be first.
-- **Patch set to carry from day one.** Audited against `Herrie82/libhybris`
-  `herrie/android16-tls` @ `032a289a` on 15 Sep 2026 (MP01 bring-up):
+- **Patch set to carry from day one.** State of `Herrie82/libhybris`
+  `herrie/android16-tls` @ `032a289a`:
   - PR #543 / #575 — TLS workaround for A12+ Mali blobs. **NOT in the fork.**
     Still open upstream; Ubuntu Touch, Sailfish, Droidian and FuriLabs ship it.
     Carried in-layer as meta-android `libhybris/0007-hooks-hook-MEOW_get_tls_meow_offset-*.patch`.
   - PR #601 — queueBuffer skip → tearing fix. **Already merged** (`9928c40`).
   - PR #594 + qt5-qpa-hwcomposer-plugin PR #104 — present-fence / buffer-slot.
     libhybris side **already merged** (`f6202e9`); the qt5-qpa side still needs checking.
-  - FuriLabs 4a42d42 — WaylandNativeWindow buffer-thrash crash. Not audited yet.
+  - FuriLabs 4a42d42 — WaylandNativeWindow buffer-thrash crash. Not audited.
 
 - **`--enable-mali-quirks` was OFF for every halium machine**, which is the trap:
   the Mali quirk code is all inside `#ifdef MALI_QUIRKS`, and `configure.ac`
@@ -104,58 +97,22 @@ infer either from the Android version the device runs.
   G68 in Aug 2026 but has no G78 model entry yet — "small mesa patch + GPU DT plumbing"
   away, unaccelerated today.
 
-## libhybris fixes discovered on real bring-ups
-
-| Fix | Why | Where |
-|---|---|---|
-| Android 16 TLS adaptation | TLS abort in every `getprop`/`setprop` on the 16 GSI | TheKit's adaptation, carried on `Herrie82/libhybris` branch `herrie/android16-tls` |
-| `/vendor/lib{,64}/egl` added to the linker's default LD paths | GPU driver otherwise not found | same branch |
-| `MADV_WIPEONFORK` made non-fatal | `/init` aborts on kernels < 4.14 (sargo's 4.9) | `hybris-patches` `herrie/h16-fixes` |
-| Patch 0004 (mindphone): functional `__system_property_find`, `wait`, `read_callback` hooks | they were stubbed (NULL / false / unhooked), breaking property waits | layer + device |
-| Patch 0003 (mindphone): q linker missing legacy `StaticTlsLayout::finish_layout` | headers<16 builds | layer + device |
-
-**The ashmem trap (Android 12+):** from A12, libcutils opens `/dev/ashmem<boot_id>`, not
-`/dev/ashmem`. The container's init creates that node inside the container, but hybris
-runs on the host — every `ashmem_create_region()` failed, so libfmq could not allocate,
-so the HIDL composer's command queue was never created and the compositor sent no display
-commands. The system booted to **0 failed units with working audio** and sat on the
-bootloader splash; the only evidence was in the container's logcat, not journalctl. Fix:
-create `/dev/ashmem<boot_id>` on the host in `mount-android.sh`. Applies to any A12+ GSI
-(bluejay/panther included).
-
 ## Derive, don't ship: the start-android-hals mechanism
 
-Four sargo problems were each solved by reading the vendor's own configuration at runtime
-instead of shipping a per-device file:
+`start-android-hals.sh` implements the derivations in architecture.md § The adaptation
+tier model (HAL services, `wait_for_prop` gates, `chown`/`chmod` replay, waiting for
+`IComposer`). The diagnostics behind the first two derivations — init blocked by a `wait_for_prop` gate, and the
+quoted-property trap that wedged every HIDL `getService` — are in debugging.md § 2.1 and § 2.2.
 
-| Problem | Naive fix | What LuneOS does instead |
-|---|---|---|
-| 33 vendor HALs never start | per-device service list | parse `service`/`class` out of the container's own rc files |
-| init blocked forever | hardcode `vendor.qcom.time.set` | parse every `wait_for_prop` gate from the rc files, grace-period, force stragglers |
-| 50 EACCES on vendor sysfs | per-device chown list | replay `chown`/`chmod` from the init triggers that were never reached |
-| compositor races the HAL | per-device sleep | wait for `IComposer` to actually register on hwbinder |
+**Skip lists come from the device's own adaptation.** `start-android-hals.sh` once sourced
+every adaptation's deviceinfo on the rootfs, so the one that sorted last (n2awifi) supplied
+everybody's `deviceinfo_android_skip_services`. It now sources the one `luneos-adaptation`
+(luneos-device-config) names, after the container's properties are readable.
 
-**The stuck-init story (generic diagnostic):** Halium's patched init is not merely
-curtailed — on sargo it was *stuck*. `init.<board>.rc` gates `post-fs-data` on
-`wait_for_prop vendor.qcom.time.set true`; Android's `time_daemon` (which sets it) is not
-run under Halium, so init's state machine blocks and `early-boot`/`boot`/`class_start`
-and every `chown`/`chmod` after it never happen. Setting that one property brought up the
-modem subsystem, fixed the vibrator restart loop, zeroed the sensors QMI errors, and cut
-EACCES failures from 50 to 1. **Any port that finds "init stops after post-fs-data"
-should look for a `wait_for_prop` before concluding it is by design.**
+### udev rules from the container's own ueventd files — the next derivation to adopt
 
-**The quoted-property trap (mindphone, mt6739):** `start-android-hals.sh` harvested
-`wait_for_prop` gates with awk, keeping the double quotes that init's own parser strips.
-mt6739 writes `wait_for_prop hwservicemanager.ready "true"`, so the gate never looked
-satisfied and after the grace period the script "forced" the literal value `"true"`
-(quotes included) — wedging every libhidl `WaitForProperty` (all HIDL `getService`) on
-host and container. This was the single root cause of the boot-splash hang, hiding under
-several real-but-secondary bugs. Fixed with a gsub in the awk. sargo never triggered it:
-its vendor gates carry no quotes.
-
-**udev rules from the container's own ueventd files — the next derivation to adopt.**
-The mindphone GPU-node (`pvr_sync`/`ion` 0666) and BT-node (`stpbt` ownership) fixes were
-both hand-transcribed from values already sitting in the vendor's `ueventd.rc`. UBports
+GPU-node (`pvr_sync`/`ion` 0666) and BT-node (`stpbt` ownership) fixes were both
+hand-transcribed from values already sitting in the vendor's `ueventd.rc`. UBports
 and Droidian generate the whole rule set from those files instead — pure Tier 0
 (https://docs.halium.org/en/latest/porting/debug-build/udev.html,
 https://docs.droidian.org/porting-guide/debugging-tips/):
@@ -173,101 +130,140 @@ Every ueventd node line becomes a udev rule, so node ownership/permissions match
 vendor HALs expect without a per-device list. Candidate for `luneos-device-config`
 generation, replacing the one-off `72-mindphone-gpu.rules`-style files.
 
-## Binder plumbing: verify HAL registration before debugging middleware
+## Binder and gbinder
 
 Everything LuneOS layers over libgbinder — ofono-binder-plugin, bluebinder, sensorfw's
-binder path — presumes the vendor HAL actually registered on the binder bus. Check that
-first (SFOS hadk-hot, https://sailfishos.wiki/books/hardware/page/hadk-hot):
+binder path, nfcd — presumes the vendor HAL registered on the binder bus; check that first
+with `binder-list` (debugging.md § Stage 4). If the interface is absent, middleware
+configuration is irrelevant. If it is present but libgbinder cannot reach it, check
+`ApiLevel` below.
+
+### Android 15 vendors are AIDL: the HIDL daemons stop finding anything
+
+An Android 15 vendor registers its HALs with **`servicemanager` (AIDL)**, not
+`hwservicemanager` (HIDL). LuneOS daemons that only speak HIDL then fail against
+a vendor that is working perfectly. **Before concluding that, confirm libgbinder
+speaks the vendor's servicemanager protocol** (next subsection): a wrong
+`ApiLevel` produces the same symptoms against AIDL HALs that do exist.
+
+The tell: `servicemanager` logs the AIDL HAL as found while the LuneOS daemon reports
+its HIDL backend failing (`biomd: Failed to initialize HIDL fingerprint backend`). A
+HIDL-only daemon cannot use a HAL the vendor only publishes on AIDL, whatever the
+protocol preset. Found on athena with the LineageOS 22 vendor; the HAL lists and logs
+are in device-athena.md § Vendor and GSI.
+
+### Before blaming AIDL: is libgbinder even speaking the right protocol?
+
+**Check this first, on every device, before writing or hunting a backend.** It is
+one line of configuration and it invalidates any missing-backend diagnosis when
+wrong.
+
+`libgbinder` chooses its servicemanager protocol from `ApiLevel` in
+`/etc/gbinder.conf` (or any `/etc/gbinder.d/*.conf`, which override it). It picks
+the highest preset **<=** that number, and presets exist only for
+**28, 29, 30, 31, 33, 35 and 36** (`gbinder_config.c`). So `ApiLevel = 32`
+silently selects the **API 31** preset, and the value must match the **vendor**
+the device boots against, not the device's age or the GSI.
+
+`ApiLevel` is an **SDK number**. Which property gives it depends on the vendor:
+
+| vendor | `ro.board.api_level` | use |
+|---|---|---|
+| up to Android 14 | an SDK number (e.g. 32) | `ro.board.api_level` |
+| Android 15+ | a **YYYYMM date** (202404 = A15, 202504 = A16) | `ro.vendor.build.version.sdk` (35 on A15) |
+| no board level | — | `ro.vndk.version`, then `ro.build.version.sdk` |
+
+A date written straight into `ApiLevel` is larger than every preset, so it always
+selects preset 36 (servicemanager `aidl6`) — an Android 16 protocol against an
+A15 vendor that speaks preset 35's `aidl5`. Measured on fajita and surya (both
+`ro.board.api_level=202404`, `ro.vendor.build.version.sdk=35`, no
+`ro.vndk.version`); see device-fajita.md § Android 15 vendors report a *dated*
+API level.
+
+Read the values from the vendor image itself:
 
 ```sh
-binder-list -d /dev/hwbinder | grep IRadio      # modem HAL up?
-binder-list -d /dev/hwbinder | grep ISensors    # sensors HAL up?
+debugfs -R "cat /build.prop" vendor.img | grep -E "ro.vendor.build.version.sdk|ro.board.api_level|ro.vndk.version"
 ```
 
-If the interface is absent, ofono/sensorfw configuration is irrelevant — the vendor HAL
-is not up; go back to the container (init gates, vndservicemanager). If `binder-list`
-shows **nothing at all**, the gbinder **API level** may be wrong for this Android base —
-set it in `/etc/gbinder.conf` (valid levels per `gbinder_config.c` in
-mer-hybris/libgbinder). Full triage sequence in the debugging notes.
+**The failure looks exactly like a missing backend.** On sunfish the NFC HAL was
+running (`vendor.st_nfc_hal_service`, pid 283), `nfcd` was healthy and had AIDL
+support (`nfcd-binder-plugin` 1.2.1, `libgbinder` 1.1.52 = upstream HEAD,
+including "Support for AIDL registration notifications"), and the *only* symptom
+was:
 
-## MediaTek connectivity (mindphone → generic recipe)
+```
+nfcd: [gbinder] WARNING! registerForNotifications(
+      android.hardware.nfc.INfc/default) tx error -2147483647
+```
 
-The MTK WMT combo driver (wifi/BT/GPS/FM core) is not in the GPL kernel drop — only
-built-in adapter shims. The real drivers are stock vendor modules
-(`/vendor/lib/modules`: `wmt_drv`, `wmt_chrdev_wifi`, `wlan_drv_gen2`, `bt_drv`,
-`gps_drv`) whose CRCs disagree with a reconfigured kernel (`module_layout`), so:
-`CONFIG_MODULE_FORCE_LOAD=y` in the kernel fragment, and force-loading proved safe in
-practice on this device.
+with the device on `ApiLevel = 32` (API 31 preset) against an **SDK 36** vendor.
+A call whose protocol changed across those levels is precisely what breaks first
+while everything else looks fine.
 
-Refactored (2026-08-27) into the **generic recipe
-`meta-android/recipes-core/mtk-connectivity`** — the WMT/connac combo is common to the
-whole MediaTek family. Three condition-gated systemd units + two helpers, gated on
-`ConditionPathExists |wmt_drv.ko |conninfra.ko`, shipped into every halium rootfs via
-`android-system RDEPENDS += mtk-connectivity`, inert on non-MTK:
+#### The build-time setting cannot serve most devices, and once lied
 
-- `mtk-connectivity-modules.service` → `mtk-load-modules.sh`: force-modprobe the
-  connectivity subset of `/android/vendor/lib/modules/modules.load`
-  (grep `wmt|wlan|conn|bt_drv|gps|fmradio`) — modules.load-driven so it adapts per chip
-  generation, no hardcoded list.
-- `mtk-connectivity-wifi.service`: retry `echo 1 > /dev/wmtWifi` until `wlan0` exists
-  (the container's wmt daemons must patch the CONSYS firmware first; firmware path set to
-  `/android/vendor/firmware`).
-- `mtk-connectivity-bt.service`: `mtk-bt-address.sh` seeds the BlueZ
-  `/var/lib/bluetooth/board-address` from the first 6 bytes of
-  `/mnt/vendor/nvdata/APCFG/APRDEB/BT_Addr`, chowns `/dev/stpbt` to
-  `bluetooth:bluetooth` inside the container (vendor ueventd.rc says so; container
-  ueventd made it system:system), and starts the BT HAL
-  (`android.hardware.bluetooth@1.0-service`, driven via bluebinder).
+`GBINDER_API_LEVEL` in `libgbinder.bb` is per-machine and works **only for
+machines that build their own rootfs image**. Verified by reading the value back
+out of the deployed images rather than trusting metadata:
 
-Container node access matters generally: `wmt_loader` could not open `/dev/wmtdetect`
-until the MTK connectivity nodes were exposed to the container.
+| machine | own rootfs image? | what shipped |
+|---|---|---|
+| halium-arm64, halium-arm, mindphone | yes | 32 / 30 / 30 |
+| athena | yes (`tar.gz`, no `ext4`) | **35** |
+| sargo, sunfish, bramble, bluejay, tangorpro, mp01, tissot-halium, mido-halium | no - they install the shared halium-arm64 image | **32**, always |
 
-**The `.ko` conditions are a trap on a built-in driver.** `CONFIG_MTK_COMBO=y`
-(radon) compiles the combo driver into the kernel, so no `wmt_drv.ko` and no
-`/sys/module/wlan*` ever exist and systemd reports `ConditionResult=no` — the
-units never run, silently, with nothing in the journal to say so. Widen them to
-the character devices, which exist either way:
-`ConditionPathExists=|/dev/stpbt`, `|/dev/conninfra_dev`, `|/dev/wmtWifi`.
-The same assumption broke `wlan-suspend-mode` twice over (its unit condition
-*and* its `driver_layout()` ioctl-struct detection); see debugging.md,
-"Never gate a unit on `/sys/module/<driver>`". In built-in mode the driver also
-waits for `CONNINFRA_IOCTL_DO_MODULE_INIT` before any sub-driver comes up — see
-the conninfra note below.
+And the trap that matters: **every device kit checked (athena, sargo, bluejay,
+sunfish) shipped the shared halium-arm64 `rootfs.ext4`**, so athena ran the API
+31 preset against an A15 vendor for its entire life *even though its recipe
+correctly said 35*. The metadata was right; kit assembly discarded it. Where a
+machine builds its own image, package from that image.
 
-**GKI-era MediaTek (MT6789, MP01, Sep 2026) — what changed:**
+#### How it is handled now
 
-- **The modules live in `vendor_dlkm`, not `vendor`.** All three units' conditions
-  only checked `/android/vendor/lib/modules`, so on the MP01 every unit was skipped
-  with "no trigger condition checks were met". They now also check
-  `/android/vendor_dlkm/lib/modules` (`meta-smartphone` `8fd74686`).
-- **Load order matters: WiFi and BT modules loaded together in the wrong order
-  corrupt the DMASHDL queues the two share** (`RST_FW_DL_FAIL` every ~6 s, forever).
-  Follow the vendor's two-stage `init.*.rc` order (`wmt_drv` + `connfem` on boot,
-  the rest on `vendor.connsys.driver.ready=yes`), never a generic dependency loader.
-- **WiFi power-on races `wmt_launcher`.** `wlan_drv` powers the chip as soon as
-  it loads; if `wmt_launcher` has not yet set up the host interface, power-on fails
-  with `wmt_core_stp_init: no hif info!` (`-8`) and asserts a whole-chip reset.
-  When the reset recovers, BT/WiFi/GPS all come up afterwards and WiFi works;
-  when it does not, no `wlan0`. Proper fix (open): power WiFi only after
-  `wmt_launcher`'s `WMT_open`.
-- **BT HAL name is per vendor.** Do not hardcode `bluetooth-1-0`; the MP01 has
-  `bluetooth-1-1`. `mtk-bt-bringup.sh` reads it from the vendor rc
-  (`service <name> .../android.hardware.bluetooth@*`).
-- **Restart order for BT:** stop BlueZ and bluebinder → restart the HAL → start
-  bluebinder → start BlueZ. Restarting the HAL under a connected bluebinder makes
-  it loop on "Remote has died", systemd kills it, and the leftover vhci is an
-  `hci0` that will not initialise until the whole stack is restarted in order.
-- **The MT6789 over-reports Synchronization Train support.** It sets page 2
-  byte 0 bit 2 but answers Read Synchronization Train Parameters with
-  `Unknown HCI Command`; the kernel aborts hci init, `hci0` stays DOWN
-  (`Can't init device hci0: Invalid request code (56)`), BlueZ has no adapter.
-  Fix: `deviceinfo_bluebinder_ext_features_page_2_mask="0x0400000000000000"`.
-  The MT6739 (mindphone) has the opposite problem — under-reported LE commands,
-  fixed with `BLUEBINDER_LOCAL_COMMANDS_SET`. See debugging.md for the `btmon`
-  method that finds these.
-- **`BLUEBINDER_LOCAL_FEATURES_MASK 0x0` in bluebinder's log is its own unset
-  setting echoed back**, not a reply from the controller. Easy to misread as
-  "controller dead".
+`luneos-device-config` resolves the level at boot by the table above (dated
+values mapped to `ro.vendor.build.version.sdk`, else 202404→35 and 202504→36,
+with a warning for an unknown date) and writes
+
+```
+/etc/gbinder.d/10-luneos-device.conf
+[General]
+ApiLevel = <resolved SDK level>
+```
+
+`gbinder_config.c` states outright that *"Files in the config directory overwrite
+/etc/gbinder.conf"*, so this serves devices with no image of their own and
+self-corrects a stale baked-in value. Verify on-device with:
+
+```sh
+journalctl -b | grep -i "gbinder ApiLevel"
+```
+
+### Telling a routing bug from a missing backend
+
+`hwservicemanager` being *alive* does not mean HIDL is fine, and its being
+unused does not mean it is dead. On athena it ran as pid 34 and successfully
+served `android.hardware.camera.provider@2.4::ICameraProvider/legacy/0` in the
+same boot where `nfcd` failed - so the transport was healthy and the fault was
+elsewhere.
+
+A cheap first discriminator is **the shape of the interface name in the log**:
+
+| style | shape | served by |
+|---|---|---|
+| HIDL | `android.hardware.foo@1.2::IFoo/default` | `hwservicemanager`, `/dev/hwbinder` |
+| AIDL | `android.hardware.foo.IFoo/default` | `servicemanager`, `/dev/binder` |
+
+athena's `nfcd` logged `registerForNotifications(android.hardware.nfc.INfc/default)`,
+the same call that failed in sunfish's stale-`ApiLevel` case above, and athena
+was on the stale preset too. So fix `ApiLevel` and retest before anything else. Reading the line
+as an AIDL name routed to a HIDL `IServiceManager` on `/dev/hwbinder` is
+**unverified**; if it survives the correct `ApiLevel`, check which binder node
+the call went to — a routing fix is far smaller than a new backend.
+
+`-2147483647` (`INT32_MIN+1`) is not a standard binder exception code
+(`EX_TRANSACTION_FAILED` is `-129`), which suggests a local library status
+rather than a remote reply - i.e. the call failed before reaching a remote.
 
 ## Vendor kernel modules: let the vendor's init load them
 
@@ -301,27 +297,63 @@ needed, and default `VENDOR_DLKM_MODULES=none`. With the vendor loader working,
 Check inside the container: `ls /vendor/lib/modules/modules.load`.
 
 Known hazards of the full list, still worth watching on a new device: the
-connsys family (above) and `ccci_md_all`, which once wedged PID 1 on the MP01
+connsys family (§ MediaTek connectivity) and `ccci_md_all`, which once wedged PID 1 on the MP01
 (it did not with the vendor's own order).
 
-**Modem (mindphone — a generic multi-fstab MTK bug):** `mount-android.sh` picked
-`fstab.enableswap` because it glob-sorts before `fstab.mt6739`, so the modem NV
-partitions (`nvcfg`/`nvdata`/`protect1`/`protect2` — MTK calibration + IMEI) never
-mounted, `md1.status` stayed "exception" and the RIL daemon stopped. Fix: prefer
-`fstab.$(getprop ro.hardware)`, skip `*.enableswap` — belongs upstream. After the fix:
-`md1.status=ready`, `vendor.ril-daemon-mtk` running, IRadio@1.0 em1/em2 registered,
-ofono sees `/ril_0` + `/ril_1` both Powered (dual-SIM). Note MTK exposes partitions
-under `/dev/disk/by-partlabel` only (no by-name) — `find_partition_path` covers that.
+## MediaTek connectivity (WMT/connac combo)
 
-**GPU nodes (PowerVR, generic not MTK-specific):** `/dev/pvr_sync` and `/dev/ion` need
-0666 (the vendor's own ueventd.rc values) for WAM — without it every `eglCreateContext`
-returns `EGL_BAD_ALLOC` and apps never render. Shipped as
-`/etc/udev/rules.d/72-mindphone-gpu.rules`.
+The MTK WMT combo driver (wifi/BT/GPS/FM core) is not in the GPL kernel drop — only
+built-in adapter shims. The real drivers are stock vendor modules
+(`/vendor/lib/modules`: `wmt_drv`, `wmt_chrdev_wifi`, `wlan_drv_gen2`, `bt_drv`,
+`gps_drv`) whose CRCs disagree with a reconfigured kernel (`module_layout`), so the kernel
+fragment sets `CONFIG_MODULE_FORCE_LOAD=y` and they are force-loaded. That worked on
+mindphone, and is only safe while every struct those modules touch keeps the stock layout
+(kmi-crc-matching.md § Force-loading prebuilt modules, and when it is safe; the Titan Pocket counter-example is in device-titanpocket.md).
+Set `firmware_class.path` to `/android/vendor/firmware` before loading, and stage the
+modules in a private tree under `/run`, **not** `/lib/modules/$(uname -r)` — udev coldplug
+autoloads from there and bootloops the device on the next boot.
 
-**Keypad:** udev tags `mtk-kpd` as `ID_INPUT_KEY` only; Qt evdevkeyboard discovery needs
-`ID_INPUT_KEYBOARD` → a udev rule promotes it (`71-mindphone-keypad.rules`).
+The generic recipe **`meta-android/recipes-core/mtk-connectivity`** covers the whole
+MediaTek family: three condition-gated systemd units + two helpers, shipped into every
+halium rootfs via `android-system RDEPENDS += mtk-connectivity`, inert on non-MTK:
 
-## Audio: pulseaudio-modules-droid quirks and compat shims
+- `mtk-connectivity-modules.service` → `mtk-load-modules.sh`: force-modprobe the
+  connectivity subset of the vendor's `modules.load`
+  (grep `wmt|wlan|conn|bt_drv|gps|fmradio`) — no hardcoded list, adapts per chip
+  generation.
+- `mtk-connectivity-wifi.service`: retry `echo 1 > /dev/wmtWifi` until `wlan0` exists
+  (the container's wmt daemons must patch the CONSYS firmware first).
+- `mtk-connectivity-bt.service`: seeds the BT address and node ownership and starts the
+  BT HAL (e.g. `android.hardware.bluetooth@1.0-service`, driven via bluebinder; § Bluetooth).
+
+The container needs the MTK connectivity `/dev` nodes exposed: `wmt_loader` could not open
+`/dev/wmtdetect` until they were.
+
+**Gate the units on the character devices, not on `.ko` files.** `CONFIG_MTK_COMBO=y`
+(radon) compiles the combo driver in, so no `wmt_drv.ko` and no `/sys/module/wlan*` ever
+exist and `.ko`-gated units silently never run. Use
+`ConditionPathExists=|/dev/stpbt`, `|/dev/conninfra_dev`, `|/dev/wmtWifi` (general rule:
+debugging.md, "Never gate a unit on `/sys/module/<driver>`"). In built-in mode the driver
+also waits for `CONNINFRA_IOCTL_DO_MODULE_INIT` before any sub-driver comes up.
+
+**GKI-era MediaTek (MT6789):**
+
+- **The modules live in `vendor_dlkm`, not `vendor`.** All three units' conditions
+  only checked `/android/vendor/lib/modules`, so on the MP01 every unit was skipped
+  with "no trigger condition checks were met". They now also check
+  `/android/vendor_dlkm/lib/modules` (`meta-smartphone` `9d68df46`).
+- **Load order matters: WiFi and BT modules loaded together in the wrong order
+  corrupt the DMASHDL queues the two share** (`RST_FW_DL_FAIL` every ~6 s, forever).
+  Follow the vendor's two-stage `init.*.rc` order (`wmt_drv` + `connfem` on boot,
+  the rest on `vendor.connsys.driver.ready=yes`), never a generic dependency loader.
+- **WiFi power-on races `wmt_launcher`.** `wlan_drv` powers the chip as soon as
+  it loads; if `wmt_launcher` has not yet set up the host interface, power-on fails
+  with `wmt_core_stp_init: no hif info!` (`-8`) and asserts a whole-chip reset.
+  When the reset recovers, BT/WiFi/GPS all come up afterwards and WiFi works;
+  when it does not, no `wlan0`. Proper fix (open): power WiFi only after
+  `wmt_launcher`'s `WMT_open`.
+
+## Audio
 
 Known per-device quirk arguments for `pulseaudio-modules-droid` (documented by UBports —
 https://docs.ubports.com/en/latest/porting/configure_test_fix/Sound.html — passed as
@@ -362,20 +394,58 @@ fine on the MP01 — so test, do not predict. Set it with a machine drop-in
 
 **MediaTek MT6789 audio:** the sound card only registers once `mtk-btcvsd`
 (component `mtk-btcvsd-snd`) is loaded — without it `mt6789-mt6366` defers
-forever (`snd_soc_register_card fail -517`). Find the missing component with
-`/sys/kernel/debug/devices_deferred` and `/sys/kernel/debug/asoc/components`,
-resolving the machine node's phandles against a pulled `/proc/device-tree`. The
-DT's `rt5512` speaker amp is a second-source part not populated on the MP01
-(`chip id check fail, ret = -6`); the fitted amp is `oca72xxx_pa`. The DL
-paths run at 48 kHz (`mtk_afe_fe_hw_params() ... rate 48000`); at pulseaudio's
-default 44.1 kHz the HAL resamples and playback sounds slightly off →
-`deviceinfo_audio_sample_rate="48000"`. `libsndcardparser.so not found` from
-the vendor `libtinycompress.so` is harmless noise. Pulseaudio's unit restarts
-five times within a second on a crash and then gives up, taking `audiod` with it.
+forever (`snd_soc_register_card fail -517`); find such components with the deferred-card
+method in debugging.md § Audio (Stage 4). The DL paths run at 48 kHz
+(`mtk_afe_fe_hw_params() ... rate 48000`); at pulseaudio's default 44.1 kHz the HAL
+resamples and playback sounds slightly off → `deviceinfo_audio_sample_rate="48000"`.
+`libsndcardparser.so not found` from the vendor `libtinycompress.so` is harmless noise.
+The DT may describe second-source amplifier parts that are not fitted (`chip id check
+fail`); see device-mp01.md. Pulseaudio's unit restarts five times within a second on a
+crash and then gives up, taking `audiod` with it.
+
+`module-droid-hidl` execs `/usr/libexec/audiosystem-passthrough/audiosystem-passthrough`,
+so the *runtime* dependency on the package that ships it must exist, not only a build-time
+`DEPENDS`.
 
 SFOS splits its pulseaudio plugin by Android base — `pulseaudio-modules-droid-jb2q` for
 ≤10 vs `pulseaudio-modules-droid` for ≥11 — worth knowing when borrowing their configs.
 Debug the daemon directly with `pulseaudio -v`.
+
+### Vendor libraries that assume Android's zeroed `malloc`
+
+Bionic's allocator hands back zeroed memory for a fresh block. The glibc `malloc`
+that libhybris binds to does not: it recycles chunks that start with free-list
+pointers. A vendor library that does `buf = malloc(n); strcat(buf, ...)` works on
+Android and silently builds a corrupt string under libhybris.
+
+Found on sm-t220 (see device-sm-t220.md): the MediaTek/Samsung `libaudio_param_parser-vnd.so`
+(`appGetXmlDirFromProperty`) builds `/vendor/etc/audio_param_huaqin/NA` this way.
+The HAL then cannot open its `AudioParamOptions.xml`, logs
+`MTK_AUDIO_NUMBER_OF_MIC undefined in AudioParamOptions`, and every feature option
+reads as undefined — including the one that selects the speaker amplifiers, so the
+amps stay off and the speakers are silent while the headphone path works (the
+`MTK_AUDIO_SPEAKER_PATH` mapping is in device-sm-t220.md § Subsystem notes).
+
+How to recognise it: the HAL's own log line above; `Ext_Speaker_Amp_Switch` and the
+vendor amp's profile control staying `Off` during real playback; and, decisively,
+`strace -f -e trace=openat,newfstatat` on the audio process showing a path with a
+few stray bytes in front. Read the code path before the mixer: if the HAL's
+selection logic is wrong, no amount of manual mixer setting reproduces what stock
+does.
+
+What does not work: setting the property the library writes (it rebuilds the
+string itself), `MALLOC_PERTURB_=255` (glibc's thread cache returns blocks without
+applying it), and adding `GLIBC_TUNABLES=glibc.malloc.tcache_count=0` on top (the
+vendor audio module then failed to load at all). What works is a one-allocation
+binary patch, `malloc(512)` → `calloc(512, 1)`, applied at boot to a *copy* of the
+device's own library which is then bind-mounted over the vendor path; the SM-T220
+layer script checks every instruction word before changing it so another firmware
+build is left alone and nothing from the vendor partition is redistributed. Expect
+the same class of bug in other vendor libraries: any `malloc` whose result is read
+before it is written.
+
+A Samsung 32-bit `awinic.audio.effect.so` that the 64-bit HAL cannot `dlopen` is Awinic's
+software speaker-protection DSP, not the amp switch.
 
 ## Modem: ofono plugin ladder and config keys
 
@@ -394,250 +464,59 @@ Per our Tier-0 rule LuneOS *derives* the slot topology from the HAL
 (enumerating `IRadio/slotN` on hwservicemanager) rather than hand-writing this file —
 but these are the key names the generator must emit.
 
-## Wayland socket / XDG_RUNTIME_DIR split
+Modem bring-up failures on the Android side (wrong fstab → NV partitions unmounted, MTK
+by-partlabel paths, Qualcomm `bootdevice/by-name` structure) are in debugging.md § Modem.
 
-Root cause of "QML apps won't launch" and webapp-mgr/maliit wayland failures: the
-compositor keeps its wayland socket in `XDG_RUNTIME_DIR=/tmp/luna-session`
-(surface-manager.env), but apps inherit `XDG_RUNTIME_DIR=/tmp/xdg` from
-DefaultEnvironment (webos-global.conf) — and `/tmp/xdg` is pulseaudio's dir, claimed
-0700, so the two cannot simply be merged (wayland clients get EACCES). `qml-runner` dies
-with "Failed to create wl_display" → every QML app defunct. The bridge is a
-`/tmp/xdg/wayland-0 → /tmp/luna-session/wayland-0` symlink, which kept getting wiped
-(compositor restarts, `/tmp/xdg` recreated by pulse, boot timing).
+## Bluetooth
 
-**Durable fix: `wayland-xdg-link.service`** — a tiny always-on watcher (`Type=simple`,
-`Restart=always`) that re-links every 2 s. Deliberately **not** a systemd `.path` unit:
-`PathExists` stays true, so a oneshot re-triggers in a loop and hits the start limit.
-Verified: symlink removed → restored in <3 s; compositor restart → Phone launches. Once
-this ships in the layer, the per-service `XDG_RUNTIME_DIR` env files for
-webapp-mgr/maliit become redundant.
+LuneOS reaches the controller through **bluebinder**, which proxies the vendor BT HAL into a
+vhci `hci0` for BlueZ.
 
-## Browser (Atlas) UI scaling — no system-side fix exists
+- **Node ownership:** the vendor's ueventd.rc says `/dev/stpbt` is `bluetooth:bluetooth`;
+  the container's ueventd made it `system:system`, so the HAL could not open it. Chown it
+  inside the container, then start the BT HAL (after android-system).
+- **BT address on MediaTek:** `bluebinder_post.sh` knows no MTK source; the MAC is the
+  first 6 bytes of `/mnt/vendor/nvdata/APCFG/APRDEB/BT_Addr`, written once to
+  `/var/lib/bluetooth/board-address` (`mtk-bt-address.sh`).
+- **BT HAL name is per vendor.** Do not hardcode `bluetooth-1-0`; the MP01 has
+  `bluetooth-1-1`. `mtk-bt-bringup.sh` reads it from the vendor rc
+  (`service <name> .../android.hardware.bluetooth@*`).
+- **Restart order:** stop BlueZ and bluebinder → restart the HAL → start
+  bluebinder → start BlueZ. bluebinder holds the HAL binding and does not re-bind by
+  itself; restarting the HAL under a connected bluebinder makes it loop on "Remote has
+  died", systemd kills it, and the leftover vhci is an `hci0` that will not initialise
+  until the whole stack is restarted in order.
+- **Controllers that misreport their features** abort hci init (`hci0` DOWN,
+  `Can't init device hci0: Invalid request code (56)`). The MT6789 sets page 2 byte 0
+  bit 2 (Synchronization Train) but answers Read Synchronization Train Parameters with
+  `Unknown HCI Command`: `deviceinfo_bluebinder_ext_features_page_2_mask="0x0400000000000000"`.
+  The MT6739 (mindphone) under-reports LE commands: `BLUEBINDER_LOCAL_COMMANDS_SET`.
+  The `btmon` method that finds these is in debugging.md § Bluetooth.
+- **`BLUEBINDER_LOCAL_FEATURES_MASK 0x0` in bluebinder's log is its own unset setting
+  echoed back**, not a reply from the controller.
+- **BlueZ on a different adapter than bluebinder's proxy.** If something claims `hci0`
+  first, bluebinder takes index 1, 2 or 3 and BlueZ binds the wrong adapter: Bluetooth
+  scans but will not connect (`bluebinder: Own hci index: 1`; `audiod: a2dpAdapterName =
+  hci1, adapterName = hci0` is an early tell). Compare `hciconfig -a` with bluebinder's
+  reported index. With `CONFIG_BT_HCIVHCI=y` as the only BT transport, `hci0` cannot be
+  real hardware (found on athena; see device-athena.md).
+- **rfkill soft-block that comes back:** `systemd-rfkill` restores saved state from
+  `/var/lib/systemd/rfkill/` on every boot, so a state saved while blocked re-blocks after
+  any manual `rfkill unblock` (`Failed to set mode: Blocked through rfkill (0x12)`).
+- **Samsung EFS address:** see § Legacy Qualcomm vendors below.
 
-Measured over Chromium's remote debugging port on sargo (1080x2220, 441 PPI):
+## Sensors
 
-- `webapp-mgr.sh` passes `--force-device-scale-factor` (from
-  `com.webos.surfacemanager.devicePixelRatio` via configd, 2.4 on sargo);
-  `run_browser_shell` passes no scale flag — that is the entire difference between
-  scaled system UI and a tiny browser chrome.
-- Simply adding the flag to browser_shell does not work: WebAppMgr treats the factor as a
-  pure rasterisation scale (page keeps a 450 px logical screen, JS sees
-  `devicePixelRatio: 1`), while browser_shell exposes it as a real DPR and resizes its
-  window into CSS units — the Wayland surface then disagrees with what luna-surfacemanager
-  expects and the surplus is **cropped** (toolbar buttons fall off the edge; verified at
-  1.5 and 2.75). `--force-device-zoom-level` is silently ignored (Chromium zoom is a
-  per-origin preference, not a startup switch).
-- **Conclusion: no LuneOS-side configuration fixes this — both fixes belong in Atlas.**
-  Fix 1: `document.documentElement.style.zoom` scales layout without touching the surface
-  (verified 1.5–2.4; 2.4 preferred by eye). Fix 2: collapse the fixed-width toolbar
-  buttons while the address bar is focused *and* release the field's pinned width
-  (address bar 115 → 323 device px at zoom 2.4).
-- The zoom value should be **per-device and declared, not derived** — three independent
-  surfaces (Calendar, the Enyo apps, Atlas) each rejected a "natural" density/160 ratio.
-  Ubuntu Touch reached the same conclusion: its **DeviceInfo registry**
-  (`/etc/deviceinfo/devices/<device>.yaml`, lowercase filename, auto-selected via Android
-  props with `/etc/deviceinfo/default.yaml` as fallback) declares a per-device `GridUnit`
-  scaling unit (~23 px/GU at ~440 PPI, 18 on the Nexus 7) alongside `Name`, `DeviceType`,
-  `SupportedOrientations`, `PrimaryOrientation` and per-component keys, consumed uniformly
-  by Mir/Lomiri/repowerd/pulseaudio-module-droid-discover. (UBports docs,
-  https://docs.ubports.com/en/latest/porting/configure_test_fix/device_info/index.html)
-  Droidian handles display cutouts the same declared-data way: an auto-generated JSON
-  overridable at `/usr/lib/droidian/device/phosh-notch/halium.json` — generated first,
-  overridden last, exactly our Tier 0→2 shape; remember it when LuneOS grows notch
-  support. (Droidian)
-- Side-note from the same session: an env var exported in `run_browser_shell` never
-  reached the process while a flag added in the same edit did — something filters that
-  environment; verify before relying on env vars in that script.
+sensorfw talks to the HIDL sensors HAL; sensorfwd also has an AIDL backend, not yet seen
+working on any port. On surya's A15 vendor only the AIDL multihal service exists, and the
+failure there matched the dated-`ApiLevel` problem above — retest after the gbinder fix
+before stubbing anything (device-surya.md).
 
-## Quick triage list (symptom → known cause)
+## Legacy Qualcomm vendors on the 16.0 GSI
 
-| Symptom | First suspect |
-|---|---|
-| 0 failed units, audio up, stuck on boot splash | `/dev/ashmem<boot_id>` missing on host (A12+ GSI); evidence only in container logcat |
-| All HIDL getService hang, boot splash | quoted `wait_for_prop` value forced verbatim (start-android-hals awk) |
-| init stops after post-fs-data; HALs unstarted; EACCES storms | a `wait_for_prop` gate init never clears (e.g. `vendor.qcom.time.set`) |
-| Apps render nothing, `EGL_BAD_ALLOC` | GPU nodes (`/dev/pvr_sync`, `/dev/ion`, kgsl equivalents) not world-writable per vendor ueventd.rc |
-| QML apps die, "Failed to create wl_display" | XDG_RUNTIME_DIR split; wayland socket symlink missing |
-| Modem "exception", RIL dead (MTK) | wrong fstab picked → NV partitions unmounted |
-| No wifi on MTK; `wmt_loader` errors | connectivity vendor modules not force-loaded; `/dev/wmtdetect`/`/dev/wmtWifi` not exposed/poked |
-| Screen dark but system running | nothing drives the backlight (`/sys/class/leds/lcd-backlight` at 0) |
-| Hardware keys ignored by Qt | input node lacks `ID_INPUT_KEYBOARD` udev tag |
-| Vendor HAL hangs block boot queue | lshal without a per-call watchdog |
-| Audio, camera or other subsystems dead; their modules not loaded (GKI) | container's `/vendor_dlkm` is an empty bind, so the vendor's `insmod_sh` loaded nothing |
-| Compositor spins on "failed to get drm master" | Android `charger` holds DRM master (device booted in charger mode), or the compositor opened the HWC a second time (`deviceinfo_force_hwc2`) |
-| `QT_QPA_FORCE_HWC2` set but no effect | an `export ` prefix in a systemd `EnvironmentFile=` line — systemd ignores the line |
-| Device powers off within a minute while charging | batteryd's critical-percent check on a gauge that reports `capacity=-1` |
-| batteryd reports `Charging:false` on the cable | charger `online` is `2` ("online programmable"); nyx only accepted `1` (fixed: any `> 0`) |
-| pulseaudio SIGSEGV after "cannot locate symbol ... referenced by /vendor/..." | vendor HAL needs its VNDK: `HYBRIS_PREFER_VNDK` per device |
-| `hci0` DOWN, "Invalid request code (56)" | controller rejects a command it advertised (HCI status 0x01); find it with `btmon`, mask it in bluebinder |
-| `nfcd` stopped a few minutes after boot | Waydroid's container start runs `systemctl stop nfcd` (meta-luneos waydroid patch 0010 removes it) |
-
-## Android 15 vendors are AIDL: the HIDL daemons stop finding anything
-
-An Android 15 vendor registers its HALs with **`servicemanager` (AIDL)**, not
-`hwservicemanager` (HIDL). LuneOS daemons that only speak HIDL then fail against
-a vendor that is working perfectly. On athena, with the LineageOS 22 vendor:
-
-```
-servicemanager: Found android.hardware.biometrics.fingerprint.IFingerprint/default …
-init: Could not ctl.start 'fps_hal' … fingerprint@2.1-service: No such file
-biomd: Failed to get fingerprint remote service
-biomd: Failed to initialize HIDL fingerprint backend
-```
-
-The HAL is alive; `biomd` has no AIDL backend. Everything LuneOS asks for by
-HIDL name is absent in that boot:
-
-```
-android.hardware.biometrics.fingerprint@2.1::IBiometricsFingerprint/default
-android.hardware.sensors@2.0::ISensors/default    (and @2.1, and the AIDL name)
-android.hardware.graphics.composer@2.2/2.3/2.4::IComposer/default
-android.hardware.radio.config@1.2::IRadioConfig/default
-```
-
-while the vendor publishes, on AIDL: `biometrics.fingerprint`, `nfc`, `wifi`,
-`wifi.supplicant`, `wifi.hostapd`, `power`, `vibrator`, `light`, `health`,
-`usb`, `usb.gadget`, `memtrack`, `media.c2`.
-
-**This is one root cause behind several "broken" subsystems** - fingerprint,
-NFC and sensors all dead for the same reason. Expect it on every A15+ vendor,
-so diagnose it once rather than per-peripheral.
-
-### Before blaming AIDL: is libgbinder even speaking the right protocol?
-
-**Check this first, on every device, before writing or hunting a backend.** It is
-one line of configuration and it invalidates the diagnosis below when wrong.
-
-`libgbinder` chooses its servicemanager protocol from `ApiLevel` in
-`/etc/gbinder.conf` (or any `/etc/gbinder.d/*.conf`, which override it). It picks
-the highest preset **<=** that number, and presets exist only for
-**28, 29, 30, 31, 33, 35 and 36** (`gbinder_config.c`). So `ApiLevel = 32`
-silently selects the **API 31** preset, and the value must match the **vendor**
-the device boots against, not the device's age or the GSI.
-
-Get the vendor's real level from the vendor image itself:
-
-```sh
-debugfs -R "cat /build.prop" vendor.img | grep -E "ro.vendor.build.version.sdk|ro.board.api_level|ro.vndk.version"
-```
-
-or on the device: `getprop ro.board.api_level` (then `ro.vndk.version`, then
-`ro.build.version.sdk`).
-
-**The failure looks exactly like a missing backend.** On sunfish the NFC HAL was
-running (`vendor.st_nfc_hal_service`, pid 283), `nfcd` was healthy and had AIDL
-support (`nfcd-binder-plugin` 1.2.1, `libgbinder` 1.1.52 = upstream HEAD,
-including "Support for AIDL registration notifications"), and the *only* symptom
-was:
-
-```
-nfcd: [gbinder] WARNING! registerForNotifications(
-      android.hardware.nfc.INfc/default) tx error -2147483647
-```
-
-with the device on `ApiLevel = 32` (API 31 preset) against an **SDK 36** vendor.
-A call whose protocol changed across those levels is precisely what breaks first
-while everything else looks fine.
-
-#### The build-time setting cannot serve most devices, and once lied
-
-`GBINDER_API_LEVEL` in `libgbinder.bb` is per-machine and works **only for
-machines that build their own rootfs image**. Verified by reading the value back
-out of the deployed images rather than trusting metadata:
-
-| machine | own rootfs image? | what shipped |
-|---|---|---|
-| halium-arm64, halium-arm, mindphone | yes | 32 / 30 / 30 |
-| athena | yes (`tar.gz`, no `ext4`) | **35** |
-| sargo, sunfish, bramble, bluejay, tangorpro, mp01, tissot-halium, mido-halium | no - they install the shared halium-arm64 image | **32**, always |
-
-And the trap that matters: **every staging kit checked (athena, sargo, bluejay,
-sunfish) shipped the shared halium-arm64 `rootfs.ext4`**, so athena ran the API
-31 preset against an A15 vendor for its entire life *even though its recipe
-correctly said 35*. The metadata was right; kit assembly discarded it. Where a
-machine builds its own image, package from that image.
-
-#### How it is handled now
-
-`luneos-device-config` reads the vendor's API level at boot and writes
-
-```
-/etc/gbinder.d/10-luneos-device.conf
-[General]
-ApiLevel = <vendor SDK>
-```
-
-`gbinder_config.c` states outright that *"Files in the config directory overwrite
-/etc/gbinder.conf"*, so this serves devices with no image of their own and
-self-corrects a stale baked-in value. Verify on-device with:
-
-```sh
-journalctl -b | grep -i "gbinder ApiLevel"
-```
-
-**Consequence for the athena/A15 diagnosis below: it was formed while the
-protocol level was four presets stale.** Re-test fingerprint, NFC and sensors at
-the correct level before concluding a backend is missing.
-
-### Telling a routing bug from a missing backend
-
-`hwservicemanager` being *alive* does not mean HIDL is fine, and its being
-unused does not mean it is dead. On athena it ran as pid 34 and successfully
-served `android.hardware.camera.provider@2.4::ICameraProvider/legacy/0` in the
-same boot where `nfcd` failed - so the transport was healthy and the fault was
-elsewhere.
-
-The cheap discriminator is **the shape of the interface name in the log**:
-
-| style | shape | served by |
-|---|---|---|
-| HIDL | `android.hardware.foo@1.2::IFoo/default` | `hwservicemanager`, `/dev/hwbinder` |
-| AIDL | `android.hardware.foo.IFoo/default` | `servicemanager`, `/dev/binder` |
-
-`nfcd` logged `registerForNotifications(android.hardware.nfc.INfc/default)` -
-an **AIDL-shaped name passed to a HIDL `IServiceManager` method**. That fails
-deterministically against a completely healthy system, in every boot, which is
-what distinguishes it from a race: a name of the wrong shape can never resolve
-on that node no matter how well the vendor is running.
-
-So before writing a new AIDL backend, check which binder node the call actually
-went to. If gbinder routed an AIDL name to `/dev/hwbinder`, the fix is
-servicemanager selection - far smaller than a backend.
-
-Note `-2147483647` (`INT32_MIN+1`) is not a standard binder exception code
-(`EX_TRANSACTION_FAILED` is `-129`), which suggests a local library status
-rather than a remote reply - i.e. the call failed before reaching a remote.
-
-## Bluetooth: bluebinder never owns hci0, and BlueZ binds the wrong one
-
-Symptom: Bluetooth scans but will not connect.
-
-```
-bluebinder: Own hci index: 1
-bluetoothd: Failed to set mode: Blocked through rfkill (0x12)
-bluez adapter list: hci0 only, "powered":false
-audiod: a2dpAdapterName = hci1, adapterName = hci0
-```
-
-Two separate defects:
-
-1. **BlueZ is on a different adapter than bluebinder's proxy.** Across one
-   athena journal bluebinder took index 1 nine times, index 2 five times and
-   index 3 once - **never 0**. Something claims `hci0` first and BlueZ binds it.
-   Worth checking on any Halium device: `hciconfig -a` and compare with
-   bluebinder's reported index. Note `CONFIG_BT_HCIVHCI=y` may be the only BT
-   transport in the kernel, in which case `hci0` cannot be real hardware.
-2. **rfkill soft-block.** `systemd-rfkill` restores saved state from
-   `/var/lib/systemd/rfkill/` on every boot, so a state saved while blocked
-   re-blocks after any manual `rfkill unblock`.
-
-`audiod` disagreeing with itself (`a2dpAdapterName` vs `adapterName`) is a good
-early tell that adapter indices are not what the configuration assumes.
-
-## Legacy Qualcomm vendors on the 16.0 GSI: the Galaxy A3 (2015) set (8 Oct 2026)
-
-A LineageOS 18.1 (VNDK 30) MSM8916 vendor converted by halium-legacy-vendor. Each item is generic to
-legacy Qualcomm vendors; the A3 was just the first to hit them together.
+Found on a3-2015-halium (a LineageOS 18.1, VNDK 30, MSM8916 vendor converted by
+halium-legacy-vendor; see device-a3-2015-halium.md). Each item is generic to legacy
+Qualcomm vendors.
 
 ### Display: three gaps, each hiding the next
 
@@ -701,8 +580,60 @@ wrapper). `android-system-image-legacy-a9-shim.inc` ships just that shim. Scan a
 - bluebinder_post.sh reads that property's path on the host; bluebinder patch 0004 (meta-luneos) falls
   back to /android<path>.
 
-### deviceinfo skip lists were not per device
+## webOS media server (umediaserver) on Halium: three independent ways to play nothing
 
-start-android-hals.sh sourced every adaptation's deviceinfo on the rootfs, so the one that sorts last
-(n2awifi) supplied everybody's `deviceinfo_android_skip_services`. It now sources the one
-`luneos-adaptation` (luneos-device-config) names, after the container's properties are readable.
+HTML5 audio and video in a web app go WAM → `ums.client` → `umediaserver` →
+`g-media-pipeline` → GStreamer → PulseAudio, and a failure at any hop leaves the
+page with `MEDIA_ERROR_FORMAT` and PulseAudio with no stream at all. Test the
+layers separately: `gst-launch-1.0 filesrc ! wavparse ! ... ! pulsesink
+device=pcm_output` proves GStreamer and PulseAudio; then look at `umediaserver`.
+
+1. **`waitid(...pidfd...) failed: Invalid argument`, pooled processes "exited with
+   status -1".** The kernel lacks `waitid(P_PIDFD)` (kernel-porting.md § `pidfd_open()` without `waitid(P_PIDFD)`).
+2. **`execve("/usr/sbin/reference-media-pipeline") = -1 ENOENT`** under
+   `strace -f -p $(pidof umediaserver)`. The static
+   `/etc/umediaserver/umediaserver_resource_config.txt` names that binary; the tree
+   ships `g-media-pipeline`. `dynamic_pipeline_dir` (`/var/lib/ums/conf`) is empty.
+   Seen on SM-T220, hammerhead and q25, so it is not per-device.
+3. **`POLCAND_FIND_ERR no suitable candidate found`.** A plain WAV asks the resource
+   manager for `1 ADEC` and `8 VDEC`; the table has 2 of each. VDEC 16 / ADEC 8 let
+   two players (Testr opens two at once) run. The numbers are a judgement.
+
+The player is created when the page loads: after a failed load pressing play later
+produces no log line at all, so relaunch the app with the trace already attached.
+
+## Wayland socket / XDG_RUNTIME_DIR split
+
+Root cause of "QML apps won't launch" and webapp-mgr/maliit wayland failures: the
+compositor keeps its wayland socket in `XDG_RUNTIME_DIR=/tmp/luna-session`
+(surface-manager.env), but apps inherit `XDG_RUNTIME_DIR=/tmp/xdg` from
+DefaultEnvironment (webos-global.conf) — and `/tmp/xdg` is pulseaudio's dir, claimed
+0700, so the two cannot simply be merged (wayland clients get EACCES). `qml-runner` dies
+with "Failed to create wl_display" → every QML app defunct. The bridge is a
+`/tmp/xdg/wayland-0 → /tmp/luna-session/wayland-0` symlink, which kept getting wiped
+(compositor restarts, `/tmp/xdg` recreated by pulse, boot timing).
+
+**Durable fix: `wayland-xdg-link.service`** — a tiny always-on watcher (`Type=simple`,
+`Restart=always`) that re-links every 2 s. Deliberately **not** a systemd `.path` unit:
+`PathExists` stays true, so a oneshot re-triggers in a loop and hits the start limit.
+Verified: symlink removed → restored in <3 s; compositor restart → Phone launches. The
+watcher is not in meta-luneos, so the per-service `XDG_RUNTIME_DIR` env files for
+webapp-mgr/maliit are still what the layer ships; they become redundant once it is.
+
+## Browser (Atlas) UI scaling
+
+No LuneOS-side configuration fixes a tiny Atlas browser chrome. `webapp-mgr.sh` passes
+`--force-device-scale-factor` (from `com.webos.surfacemanager.devicePixelRatio` via configd)
+and `run_browser_shell` passes none; adding it does not help, because browser_shell exposes
+the factor as a real DPR and resizes its window into CSS units, so the surface disagrees
+with luna-surfacemanager and is **cropped**. `--force-device-zoom-level` is silently
+ignored. Both fixes belong in Atlas: `document.documentElement.style.zoom` for layout, and
+collapsing the fixed-width toolbar while the address bar is focused (measurements on sargo:
+device-sargo.md). The zoom value should be **per-device and declared, not derived** —
+Calendar, the Enyo apps and Atlas each rejected a "natural" density/160 ratio. Ubuntu
+Touch's DeviceInfo registry (`/etc/deviceinfo/devices/<device>.yaml`, a per-device
+`GridUnit`; https://docs.ubports.com/en/latest/porting/configure_test_fix/device_info/index.html)
+and Droidian's overridable generated notch JSON
+(`/usr/lib/droidian/device/phosh-notch/halium.json`) are the same declared-data, Tier 0→2
+shape. An env var exported in `run_browser_shell` never reached the process while a flag
+in the same edit did — verify before relying on env vars there.
