@@ -252,6 +252,12 @@ bionic from its runtime APEX (`lib*/bionic/`). Unresolved symbols reported *insi
 are noise (the real linker resolves those in the system namespace); the ones in vendor libraries are
 the findings. `memcpy` & co. are IFUNCs and are skipped.
 
+**Leave `libft2.so` out of that LLNDK directory.** The list names it but the vendor's namespace does not
+hand it over (gsi-building.md § Before deriving, item 5); with it in the path fullres.py reports a
+vendor whose gralloc cannot load as fully resolved. Also run it on the libraries that services
+`hw_get_module()`/dlopen rather than link: `lib/hw/gralloc.<soc>.so`, `hwcomposer.<soc>.so` and the
+graphics `-impl.so` files, not just on daemons.
+
 ```python
 # fullres.py <dirs, colon-separated, in search order> <exe> [preload ...] [-- dlopened ...]
 import subprocess, sys, os
