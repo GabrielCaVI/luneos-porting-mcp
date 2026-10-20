@@ -492,6 +492,24 @@ check each on any pre-4.x Tier B port.
 - **No `CONFIG_BT_HCIVHCI` / `CONFIG_RFKILL`** in an old defconfig: bluebinder
   exits "No such device".
 
+Found on a 3.10 Spreadtrum kernel (SM-T113, sc8830; device-goyavewifi.md), one remote test round each:
+
+- **Syscalls the GSI's bionic issues:** `seccomp` (383) and `getrandom` (384) unwired, so the
+  container's init exits 127; `memfd_create` with sealing.
+- **The 64-bit binder ABI.** `ANDROID_BINDER_IPC_32BIT` promptless and on gives `Binder driver
+  protocol(7) does not match user space protocol(8)`; make it selectable and off, and backport
+  `get_user()` of 8-byte types (ARM 8091/2).
+- **Ambient capabilities:** init warns, and apexd-bootstrap fails on the loop devices (EACCES).
+- **`O_TMPFILE` (3.11):** `tombstoned` exits 1 on `openat(".", O_TMPFILE) = -EISDIR`; it needs the
+  backport series plus ext3/ext4 `->tmpfile()`.
+
+**Audit the whole list before the first boot, not one gap per log.** Those four cost four rounds and
+were all in sibling trees already. One pass finds them: list every syscall number the GSI's arm32
+`libc.so` issues (`mov r7,#N ... svc`) and diff it against the target's and the nearest working port's
+`arch/arm/kernel/calls.S`; then make a feature matrix over the sibling kernel trees (O_TMPFILE, ambient
+capabilities, memfd, binder ABI, `PR_SET_VMA`, binder scatter-gather...). Copy each feature from the
+sibling with the same base version rather than re-porting it from an older tree.
+
 Found on a 3.10 **arm64** kernel (Nexus 5X, msm8992; device-bullhead.md):
 
 - **arm64 glibc assumes 4.9.** The arm64 Halium glibc is built with `OLDEST_KERNEL` 4.9, so

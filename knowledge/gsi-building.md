@@ -212,7 +212,9 @@ The class closes over `DT_NEEDED` **by name**, from the vendor, the VNDK/LLNDK a
 `/system/lib`. Four things it does not find on its own; each cost a test round on bullhead
 (LineageOS 21 vendor, device-bullhead.md). Check them on every LineageOS-derived vendor before the
 first derive (item 5 is a fifth that every legacy vendor with framework copies needs, found on four
-devices):
+devices). Read the sibling ports' recipes before any of it: every `HALIUM_LEGACY_*` line in another
+`android-system-image-*.bb` is a trap someone already paid for, and the libft2.so one (item 5) was in
+three recipes before goyavewifi spent rounds finding it again.
 
 1. **LineageOS's linker shims.** LineageOS builds `TARGET_LD_SHIM_LIBS` into its own linker, which
    loads a shim next to the library that needs it; the GSI's linker does not. Read the map out of the
