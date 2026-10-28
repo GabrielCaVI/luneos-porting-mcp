@@ -344,9 +344,10 @@ are unavailable in the initramfs. It:
    Under VirtualBox on Apple Silicon a 64 GB guest failed to start
    (`VERR_NEM_MAP_PAGES_FAILED`); 48 GB worked. `INHERIT += "rm_work"` took the 387 GB
    guest disk from 80 GB free to 246 GB free by the end of the image.
-8. **More x86_64-host assumptions on an aarch64 host**, all fixed so an x86_64 host
-   behaves as before (each gated on `BUILD_ARCH`); found by a look-ahead pass over the
-   task graph rather than one failure at a time:
+8. **More x86_64-host assumptions on an aarch64 host**, fixed so an x86_64 host behaves
+   as before (the host-tool fixes are gated on `BUILD_ARCH`; the dead-fetch fixes below
+   apply to every host); found by a look-ahead pass over the task graph rather than one
+   failure at a time:
    - `nodejs-enyo-dev-native` ships Node v0.12.2 for i686/x86_64 only: native `strip`
      rejects the binaries, and `webos_enyodev_application.bbclass` runs
      `node_binaries/${BUILD_ARCH}/node`. Fall back to `nodejs-native`, and swap the
@@ -359,7 +360,13 @@ are unavailable in the initramfs. It:
      for the host (`build/toolchain/cros` pins it to x64). Verified through `gn gen`
      ("Made 32193 targets") and the full 47,606-step compile.
    - `webruntime-clang_151.bb` hard-sets `PARALLEL_MAKE = "-j 64"`, which overrides
-     local.conf; cap it with `PARALLEL_MAKE:pn-webruntime-clang`.
+     local.conf; cap it with `PARALLEL_MAKE:pn-webruntime-clang`. **Changing it rebuilds
+     Chromium**: `PARALLEL_MAKE` is normally kept out of task signatures, but this recipe
+     interpolates it into `NINJA_OPTS`, which `do_compile` uses, so the value is part of
+     the compile hash. With `rm_work` the old build directory is already gone, so the
+     first change costs a full ~47,600-step compile; a later change resumes incrementally
+     (ninja keeps the objects of the interrupted run). Pick the value before the first
+     Chromium build.
    - Dead fetches: presage (SourceForge path), cell-broadcast-provider-info (SRCREV
      dropped by an upstream history rewrite; tag 0.9.0 has the identical tree),
      ttf-noto-emoji (needs `lfs=0` on a host without git-lfs; the installed font is

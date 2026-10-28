@@ -499,10 +499,20 @@ vhci `hci0` for BlueZ.
   scans but will not connect (`bluebinder: Own hci index: 1`; `audiod: a2dpAdapterName =
   hci1, adapterName = hci0` is an early tell). Compare `hciconfig -a` with bluebinder's
   reported index. With `CONFIG_BT_HCIVHCI=y` as the only BT transport, `hci0` cannot be
-  real hardware (found on athena; see device-athena.md).
+  real hardware (found on athena; see device-athena.md). But do not read the index from
+  bluebinder's log alone: on pioneer "Own hci index: 2" (later 3–9) tracked the rfkill
+  index while `hci0` was the only adapter and BlueZ used it correctly
+  (device-pioneer.md).
 - **rfkill soft-block that comes back:** `systemd-rfkill` restores saved state from
   `/var/lib/systemd/rfkill/` on every boot, so a state saved while blocked re-blocks after
-  any manual `rfkill unblock` (`Failed to set mode: Blocked through rfkill (0x12)`).
+  any manual `rfkill unblock` (`Failed to set mode: Blocked through rfkill (0x12)`). **The
+  block comes from connman:** its bluetooth plugin, with the default `[Bluetooth]
+  Enable=false`, soft-blocks every Bluetooth rfkill switch as it appears, bluebinder's
+  `hci0` included, and systemd-rfkill only saves what connman did. Bluetooth belongs to
+  bluetooth2, which never touches rfkill, so run `connmand --noplugin=bluetooth` and drop
+  saved Bluetooth rfkill state at boot (tmpfiles.d). An `ExecStartPre=rfkill unblock` on
+  bluetooth.service does not work: D-Bus activation can start bluetoothd before
+  bluebinder's `hci0` exists. Found on pioneer; see device-pioneer.md § Subsystem notes.
 - **Samsung EFS address:** see § Legacy Qualcomm vendors below.
 
 ## Sensors
