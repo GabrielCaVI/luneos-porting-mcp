@@ -353,17 +353,21 @@ GCC's stricter analysis is worth the trouble — on athena it found seven genuin
 bugs in shipping code, including a `memset` clearing a quarter of its buffer and an
 overflowable `copy_from_user` bound check. Fix those at source; silence only the noise.
 
-### LSE atomics on ARMv8.0 SoCs: keep them off
+### LSE atomics on ARMv8.0 SoCs: match the device's reference ROM
 
 `CONFIG_ARM64_USE_LSE_ATOMICS` builds ARMv8.1 atomics alongside the LL/SC ones and
 picks at runtime with a static key; on an ARMv8.0 SoC (SDM660: Cortex-A73/A53) it
-is dead weight. Turn it off to match the reference ROMs: a 4.19 tree marks clang's
-assembler `CONFIG_BROKEN_GAS_INST`, so LineageOS and UBports never enable LSE,
-while a Yocto build with binutils passes that test and gets a code-generation
-difference no shipped ROM has. On such a tree a `can't patch jump_label` warning
-on every boot means a static key keeps whatever value it had, so do not assume a
-runtime CPU-feature switch is inert just because the hardware lacks the feature
-(found on athena; see device-athena.md).
+is dead weight. Whether the shipped ROM has it on depends on that ROM's toolchain,
+so read the reference kernel's IKCONFIG rather than assuming. On athena's tree the
+ROM's clang made the 4.19 tree mark the assembler `CONFIG_BROKEN_GAS_INST`, so LSE
+was never enabled there, while a Yocto build with binutils passes that test and
+got a code-generation difference no shipped ROM had — so athena turns it off. On
+such a tree a `can't patch jump_label` warning on every boot means a static key
+keeps whatever value it had, so do not assume a runtime CPU-feature switch is
+inert just because the hardware lacks the feature (found on athena; see
+device-athena.md). The opposite also occurs: pioneer's LineageOS 24.0 kernel
+(SDM630, clang 22) ships `ARM64_LSE_ATOMICS=y`, and copying athena's LSE-off line
+made it the one unexplained difference against that IKCONFIG (device-pioneer.md).
 
 ### Framebuffer console as a Tier B debug channel — often does NOT work
 

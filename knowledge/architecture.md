@@ -174,6 +174,7 @@ holds the detail, sources and open issues.
 | `a3-2015-halium` | Samsung Galaxy A3 (2015) | Qualcomm MSM8916 | B, 32-bit | 3.10.108 | LineageOS 18.1, VNDK 30 | 16.0 arm | UI, modem, Wi-Fi, BT, audio, camera work |
 | `athena` | BlackBerry KEY2 | Qualcomm SDM660 | B | 4.19.325 | LineageOS 22 (A15) | 16.0 arm64 | lock screen; display, touch, QWERTY, Wi-Fi, audio work; BT, NFC, sensors, camera broken |
 | `fajita` | OnePlus 6T | Qualcomm SDM845 | B | 4.9.337 LineageOS | LineageOS 22.2 (A15) | 16.0 arm64 | builds, verified host-side; never run on hardware |
+| `pioneer` | Sony Xperia XA2 | Qualcomm SDM630 | B | 4.19.325 LineageOS sdm660 (clang) | LineageOS 24.0 (A17); 23.2 fallback | 16.0 arm64 | built host-side; never flashed |
 | `surya` | Xiaomi POCO X3 NFC | Qualcomm SM7150-AC (732G) | B | 4.14.356 LineageOS | /e/OS A15 | 16.0 arm64 | one on-device logcat (container up, sensors broken); otherwise untested |
 
 ## The Halium container handshake

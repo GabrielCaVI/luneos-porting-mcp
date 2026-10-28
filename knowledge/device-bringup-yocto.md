@@ -328,6 +328,43 @@ are unavailable in the initramfs. It:
    `/dev/disk/by-partlabel/vendor$slot` instead of hardcoding `mmcblk0p*`.
 5. Kernel host tools failing on `constexpr` under C23: kernel-porting.md § Old BSP vs
    modern toolchain.
+6. **aarch64 build host: `clang-stage1-native` (meta-pgo) fails `compiler-rt` configure**
+   with `error: unknown target triple 'unknown'` on every check. The recipe hardcodes
+   `-DLLVM_TARGETS_TO_BUILD=X86`, so on an arm64 host the stage-1 clang has no backend
+   for its own default triple. Fix: build the backend for `BUILD_ARCH`
+   (`{'x86_64': 'X86', 'aarch64': 'AArch64'}[d.getVar('BUILD_ARCH')]`), then
+   `bitbake -c clean clang-stage1-native`. Found building pioneer on an Apple Silicon VM.
+7. **The rootfs build needs memory, not just cores.** `luneos-dev-image` with defaults on
+   10 vCPU / 32 GB and **no swap** (cloud images ship none) hit the OOM killer in
+   parallel C++ compiles and froze the guest — sshd could not even send its banner.
+   48 GB + a 16 GB swapfile + `BB_NUMBER_THREADS = "6"`, `PARALLEL_MAKE = "-j 8"`,
+   `BB_PRESSURE_MAX_MEMORY` kept it under ~30 GB. A forced power-off afterwards left
+   truncated objects (ffmpeg linked a `libavcodec.so` missing whole decoders:
+   `undefined reference to ff_vp8_decoder`); `bitbake -c clean <recipe>` fixes each one.
+   Under VirtualBox on Apple Silicon a 64 GB guest failed to start
+   (`VERR_NEM_MAP_PAGES_FAILED`); 48 GB worked. `INHERIT += "rm_work"` took the 387 GB
+   guest disk from 80 GB free to 246 GB free by the end of the image.
+8. **More x86_64-host assumptions on an aarch64 host**, all fixed so an x86_64 host
+   behaves as before (each gated on `BUILD_ARCH`); found by a look-ahead pass over the
+   task graph rather than one failure at a time:
+   - `nodejs-enyo-dev-native` ships Node v0.12.2 for i686/x86_64 only: native `strip`
+     rejects the binaries, and `webos_enyodev_application.bbclass` runs
+     `node_binaries/${BUILD_ARCH}/node`. Fall back to `nodejs-native`, and swap the
+     2015 graceful-fs copies for 4.2.11 or a current Node dies on
+     `primordials is not defined`.
+   - `webruntime-clang` (Chromium 151) runs x86_64 CIPD binaries: `gn`, `ninja`,
+     Blink's `gperf`, `mold`, devtools-frontend's `esbuild` and rollup's native addon.
+     Swap in native tools (a `gn` built at Chromium's own pin, not oe-core's older one),
+     the arm64 npm packages, and `use_mold=false`; and build the V8 snapshot toolchain
+     for the host (`build/toolchain/cros` pins it to x64). Verified through `gn gen`
+     ("Made 32193 targets") and the full 47,606-step compile.
+   - `webruntime-clang_151.bb` hard-sets `PARALLEL_MAKE = "-j 64"`, which overrides
+     local.conf; cap it with `PARALLEL_MAKE:pn-webruntime-clang`.
+   - Dead fetches: presage (SourceForge path), cell-broadcast-provider-info (SRCREV
+     dropped by an upstream history rewrite; tag 0.9.0 has the identical tree),
+     ttf-noto-emoji (needs `lfs=0` on a host without git-lfs; the installed font is
+     not in LFS). A `bitbake --runall=fetch` from a second build directory finds these
+     early and pre-downloads everything else.
 
 ## Device-agnostic principles
 
