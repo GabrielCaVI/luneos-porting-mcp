@@ -179,6 +179,7 @@ The debug gadget is RNDIS-only, and **macOS has no RNDIS driver**: from a Mac, p
 
 ## Open issues
 
+- **Memory stall after ~2.5 h of uptime** (28 Oct 2026, final image): load average 73, MemAvailable ~180 MB of 2.7 GB, UI unresponsive. adb still answered, but too slowly to list processes, and the USB gadget had switched to the vendor's "Xperia XA2" identity. Candidates, not yet checked: a web app left running (a CPU-rendered game and Maps were open; WebAppMgr has no WebGL), a crash/coredump loop, the opt-in fingerprint-tap session (off by default). Next time, sample per-process RSS before it gets this far.
 - Fingerprint: a full enrolment and match with a real finger.
 - keymaster and the battery indicator: verify after flashing the image that carries their fixes.
 - GNSS: an outdoor fix; whether the `network` handler should be enabled.
