@@ -20,7 +20,8 @@ Hardware-verified on an H4113 (dual SIM, FPC fingerprint sensor) unless marked.
 | Wi-Fi passphrase entry | fixed in build | the status-bar menu never showed a passphrase field (generic LuneOS bug, § Subsystem notes) |
 | Bluetooth | works | pairing with a Mac, OBEX push Mac → phone (md5 checked); phone → Mac untested; A2DP untested |
 | Modem | works | ONLINE, no crashes, EFS served; **no SIM inserted**, so registration, calls and data untested |
-| Camera | works | 2 sensors, rear IMX300 5520×4144 and front 3264×2448 stills via droidcamsrc (§ Vendor and GSI) |
+| Camera | works | 2 sensors, rear IMX300 5520×4144 and front 3264×2448 stills via droidcamsrc (§ Vendor and GSI); the long-press opens it (28 Oct) |
+| Photos (gallery) | fixed in build, not verified | the shipped Photos & Videos app is the Enyo template and read no media; WIP patch in `meta-webos-ports` (§ Open issues) |
 | Sensors | works | accelerometer, light, proximity, magnetometer, compass; no gyroscope in the hardware |
 | Vibrator | works | |
 | Torch | driven | sysfs switches correctly; LED not observed |
@@ -179,7 +180,8 @@ The debug gadget is RNDIS-only, and **macOS has no RNDIS driver**: from a Mac, p
 
 ## Open issues
 
-- **Memory stall after ~2.5 h of uptime** (28 Oct 2026, final image): load average 73, MemAvailable ~180 MB of 2.7 GB, UI unresponsive. adb still answered, but too slowly to list processes, and the USB gadget had switched to the vendor's "Xperia XA2" identity. Candidates, not yet checked: a web app left running (a CPU-rendered game and Maps were open; WebAppMgr has no WebGL), a crash/coredump loop, the opt-in fingerprint-tap session (off by default). Next time, sample per-process RSS before it gets this far.
+- **Memory stall after ~2.5 h of uptime** (28 Oct 2026, final image): load average 73, MemAvailable ~180 MB of 2.7 GB, UI unresponsive. adb still answered, but too slowly to list processes, and the USB gadget had switched to the vendor's "Xperia XA2" identity. Candidates, not yet checked: a web app left running (a CPU-rendered game and Maps were open; WebAppMgr has no WebGL), a crash/coredump loop, the opt-in fingerprint-tap session (off by default). Second stall, 28 Oct 2026 at 17:50 local, about 30 min after boot: per-minute sampling of RSS, MemAvailable, PSI and load shows load 7 at 17:47, load 101 at 17:50, MemAvailable 131 MB and swap at 0. The largest process was the Camera app (`qml-runner`), 134 MB at 17:45 and 414 MB at 17:50; it had been opened by the camera key and left running in the background. Killing it did not recover the phone; only a power-hold reboot did. The camera is the leading candidate; not reproduced yet. Sample per-process RSS from the start of every session.
+- **Photos gallery:** the shipped app is the Enyo template and reads no media, so captures never show. A WIP patch in `meta-webos-ports` (`org.webosports.app.photos`, commit `9e41a6fe9`) lists DCIM through the file manager service, asks for `com.palm.media.image.file:1` read access, and shows the camera's thumbnails (`.thumbnails/<md5 of path>.jpg`). Not verified on the phone: the Allow prompt, the grid and the full-size view.
 - Fingerprint: a full enrolment and match with a real finger.
 - keymaster and the battery indicator: verify after flashing the image that carries their fixes.
 - GNSS: an outdoor fix; whether the `network` handler should be enabled.
